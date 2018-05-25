@@ -2735,7 +2735,7 @@ JS_FRIEND_API(void)
 js_TraceContext(JSTracer *trc, JSContext *acx)
 {
     JSArena *a;
-    int64 age;
+    int64 age, tmp, factor;
     JSStackFrame *fp, *nextChain;
     JSStackHeader *sh;
     JSTempValueRooter *tvr;
@@ -2748,8 +2748,12 @@ js_TraceContext(JSTracer *trc, JSContext *acx)
         a = acx->stackPool.current;
         if (a == acx->stackPool.first.next &&
             a->avail == a->base + sizeof(int64)) {
-            age = JS_Now() - *(int64 *) a->base;
-            if (age > (int64) acx->runtime->gcStackPoolLifespan * 1000)
+            age = JS_Now();
+            JSLL_NEG(age, *(int64 *) a->base);
+            JSLL_UI2L(tmp, acx->runtime->gcStackPoolLifespan);
+            JSLL_I2L(factor, 1000);
+            JSLL_MUL(tmp, tmp, factor);
+            if (JSLL_CMP(age, >, tmp))
                 JS_FinishArenaPool(&acx->stackPool);
         }
 
