@@ -3,41 +3,9 @@
  *
  *  Arbitrary precision integer arithmetic library
  *
- * The contents of this file are subject to the Mozilla Public
- * License Version 1.1 (the "License"); you may not use this file
- * except in compliance with the License. You may obtain a copy of
- * the License at http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS
- * IS" basis, WITHOUT WARRANTY OF ANY KIND, either express or
- * implied. See the License for the specific language governing
- * rights and limitations under the License.
- *
- * The Original Code is the MPI Arbitrary Precision Integer Arithmetic
- * library.
- *
- * The Initial Developer of the Original Code is Michael J. Fromberger.
- * Portions created by Michael J. Fromberger are 
- * Copyright (C) 1998, 1999, 2000 Michael J. Fromberger. 
- * All Rights Reserved.
- *
- * Contributor(s):
- *	Netscape Communications Corporation
- *
- * Alternatively, the contents of this file may be used under the
- * terms of the GNU General Public License Version 2 or later (the
- * "GPL"), in which case the provisions of the GPL are applicable
- * instead of those above.  If you wish to allow use of your
- * version of this file only under the terms of the GPL and not to
- * allow others to use your version of this file under the MPL,
- * indicate your decision by deleting the provisions above and
- * replace them with the notice and other provisions required by
- * the GPL.  If you do not delete the provisions above, a recipient
- * may use your version of this file under either the MPL or the
- * GPL.
- *
- *  $Id: mpi.h,v 1.20 2002/04/04 00:19:43 nelsonb%netscape.com Exp $
- */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef _H_MPI_
 #define _H_MPI_
@@ -60,13 +28,7 @@
 #undef ULLONG_MAX
 #endif
 
-#if defined( macintosh )
-#include <Types.h>
-#elif defined( _WIN32_WCE)
-/* #include <sys/types.h> What do we need here ?? */
-#else
 #include <sys/types.h>
-#endif
 
 #define  MP_NEG    1
 #define  MP_ZPOS   0
@@ -94,11 +56,11 @@ typedef int               mp_err;
 #error "USHRT_MAX not defined"
 #endif
 
-#if defined(ULONG_LONG_MAX)			/* GCC, HPUX */
-#define MP_ULONG_LONG_MAX ULONG_LONG_MAX
-#elif defined(ULLONG_MAX)			/* Solaris */
+#if defined(ULLONG_MAX)				/* C99, Solaris */
 #define MP_ULONG_LONG_MAX ULLONG_MAX
 /* MP_ULONG_LONG_MAX was defined to be ULLONG_MAX */
+#elif defined(ULONG_LONG_MAX)			/* HPUX */
+#define MP_ULONG_LONG_MAX ULONG_LONG_MAX
 #elif defined(ULONGLONG_MAX)			/* IRIX, AIX */
 #define MP_ULONG_LONG_MAX ULONGLONG_MAX
 #endif
@@ -163,7 +125,8 @@ typedef          int      mp_sword;
 #define MP_WORD_MAX       UINT_MAX
 #endif
 
-#define MP_DIGIT_BIT      (CHAR_BIT*sizeof(mp_digit))
+#define MP_DIGIT_SIZE sizeof(mp_digit)
+#define MP_DIGIT_BIT (CHAR_BIT * MP_DIGIT_SIZE)
 #define MP_WORD_BIT       (CHAR_BIT*sizeof(mp_word))
 #define MP_RADIX          (1+(mp_word)MP_DIGIT_MAX)
 
@@ -296,13 +259,17 @@ const  char  *mp_strerror(mp_err ec);
 
 /* Octet string conversion functions */
 mp_err mp_read_unsigned_octets(mp_int *mp, const unsigned char *str, mp_size len);
-int    mp_unsigned_octet_size(const mp_int *mp);
+unsigned int mp_unsigned_octet_size(const mp_int *mp);
 mp_err mp_to_unsigned_octets(const mp_int *mp, unsigned char *str, mp_size maxlen);
 mp_err mp_to_signed_octets(const mp_int *mp, unsigned char *str, mp_size maxlen);
 mp_err mp_to_fixlen_octets(const mp_int *mp, unsigned char *str, mp_size len);
 
 /* Miscellaneous */
 mp_size mp_trailing_zeros(const mp_int *mp);
+void freebl_cpuid(unsigned long op, unsigned long *eax,
+                         unsigned long *ebx, unsigned long *ecx,
+                         unsigned long *edx);
+
 
 #define MP_CHECKOK(x)  if (MP_OKAY > (res = (x))) goto CLEANUP
 #define MP_CHECKERR(x) if (MP_OKAY > (res = (x))) goto CLEANUP

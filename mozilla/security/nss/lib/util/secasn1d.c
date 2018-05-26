@@ -1,42 +1,20 @@
-/*
- * The contents of this file are subject to the Mozilla Public
- * License Version 1.1 (the "License"); you may not use this file
- * except in compliance with the License. You may obtain a copy of
- * the License at http://www.mozilla.org/MPL/
- * 
- * Software distributed under the License is distributed on an "AS
- * IS" basis, WITHOUT WARRANTY OF ANY KIND, either express or
- * implied. See the License for the specific language governing
- * rights and limitations under the License.
- * 
- * The Original Code is the Netscape security libraries.
- * 
- * The Initial Developer of the Original Code is Netscape
- * Communications Corporation.  Portions created by Netscape are 
- * Copyright (C) 1994-2000 Netscape Communications Corporation.  All
- * Rights Reserved.
- * 
- * Contributor(s):
- * 
- * Alternatively, the contents of this file may be used under the
- * terms of the GNU General Public License Version 2 or later (the
- * "GPL"), in which case the provisions of the GPL are applicable 
- * instead of those above.  If you wish to allow use of your 
- * version of this file only under the terms of the GPL and not to
- * allow others to use your version of this file under the MPL,
- * indicate your decision by deleting the provisions above and
- * replace them with the notice and other provisions required by
- * the GPL.  If you do not delete the provisions above, a recipient
- * may use your version of this file under either the MPL or the
- * GPL.
- */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /*
  * Support for DEcoding ASN.1 data based on BER/DER (Basic/Distinguished
  * Encoding Rules).
- *
- * $Id: secasn1d.c,v 1.19.2.2 2003/06/05 22:34:23 wtc%netscape.com Exp $
  */
+
+/* #define DEBUG_ASN1D_STATES 1 */
+
+#ifdef DEBUG_ASN1D_STATES
+#include <stdio.h>
+#define PR_Assert sec_asn1d_Assert
+#endif
+
+#include <limits.h>
 
 #include "secasn1.h"
 #include "secerr.h"
@@ -72,7 +50,7 @@ typedef enum {
 } sec_asn1d_parse_place;
 
 #ifdef DEBUG_ASN1D_STATES
-static const char *place_names[] = {
+static const char * const place_names[] = {
     "beforeIdentifier",
     "duringIdentifier",
     "afterIdentifier",
@@ -101,6 +79,114 @@ static const char *place_names[] = {
     "afterChoice",
     "notInUse"
 };
+
+static const char * const class_names[] = {
+    "UNIVERSAL",
+    "APPLICATION",
+    "CONTEXT_SPECIFIC",
+    "PRIVATE"
+};
+
+static const char * const method_names[] = { "PRIMITIVE", "CONSTRUCTED" };
+
+static const char * const type_names[] = {
+    "END_OF_CONTENTS",
+    "BOOLEAN",
+    "INTEGER",
+    "BIT_STRING",
+    "OCTET_STRING",
+    "NULL",
+    "OBJECT_ID",
+    "OBJECT_DESCRIPTOR",
+    "(type 08)",
+    "REAL",
+    "ENUMERATED",
+    "EMBEDDED",
+    "UTF8_STRING",
+    "(type 0d)",
+    "(type 0e)",
+    "(type 0f)",
+    "SEQUENCE",
+    "SET",
+    "NUMERIC_STRING",
+    "PRINTABLE_STRING",
+    "T61_STRING",
+    "VIDEOTEXT_STRING",
+    "IA5_STRING",
+    "UTC_TIME",
+    "GENERALIZED_TIME",
+    "GRAPHIC_STRING",
+    "VISIBLE_STRING",
+    "GENERAL_STRING",
+    "UNIVERSAL_STRING",
+    "(type 1d)",
+    "BMP_STRING",
+    "HIGH_TAG_VALUE"
+};
+
+static const char * const flag_names[] = { /* flags, right to left */
+    "OPTIONAL",
+    "EXPLICIT",
+    "ANY",
+    "INLINE",
+    "POINTER",
+    "GROUP",
+    "DYNAMIC",
+    "SKIP",
+    "INNER",
+    "SAVE",
+    "",            /* decoder ignores "MAY_STREAM", */
+    "SKIP_REST",
+    "CHOICE",
+    "NO_STREAM",
+    "DEBUG_BREAK",
+    "unknown 08",
+    "unknown 10",
+    "unknown 20",
+    "unknown 40",
+    "unknown 80"
+};
+
+static int /* bool */
+formatKind(unsigned long kind, char * buf)
+{
+    int i;
+    unsigned long k = kind & SEC_ASN1_TAGNUM_MASK;
+    unsigned long notag = kind & (SEC_ASN1_CHOICE | SEC_ASN1_POINTER |
+        SEC_ASN1_INLINE | SEC_ASN1_ANY | SEC_ASN1_SAVE);
+
+    buf[0] = 0;
+    if ((kind & SEC_ASN1_CLASS_MASK) != SEC_ASN1_UNIVERSAL) {
+        sprintf(buf, " %s", class_names[(kind & SEC_ASN1_CLASS_MASK) >> 6] );
+        buf += strlen(buf);
+    }
+    if (kind & SEC_ASN1_METHOD_MASK) {
+        sprintf(buf, " %s", method_names[1]);
+        buf += strlen(buf);
+    }
+    if ((kind & SEC_ASN1_CLASS_MASK) == SEC_ASN1_UNIVERSAL) {
+        if (k || !notag) {
+            sprintf(buf, " %s", type_names[k] );
+            if ((k == SEC_ASN1_SET || k == SEC_ASN1_SEQUENCE) &&
+                (kind & SEC_ASN1_GROUP)) {
+                buf += strlen(buf);
+                sprintf(buf, "_OF");
+            }
+        }
+    } else {
+        sprintf(buf, " [%d]", k);
+    }
+    buf += strlen(buf);
+
+    for (k = kind >> 8, i = 0; k; k >>= 1, ++i) {
+        if (k & 1) {
+            sprintf(buf, " %s", flag_names[i]);
+            buf += strlen(buf);
+        }
+    }
+    return notag != 0;
+}
+
 #endif /* DEBUG_ASN1D_STATES */
 
 typedef enum {
@@ -188,8 +274,8 @@ typedef struct sec_asn1d_state_struct {
  * SEC_ASN1DecoderFinish().
  */
 struct sec_DecoderContext_struct {
-    PRArenaPool *our_pool;		/* for our internal allocs */
-    PRArenaPool *their_pool;		/* for destination structure allocs */
+    PLArenaPool *our_pool;		/* for our internal allocs */
+    PLArenaPool *their_pool;		/* for destination structure allocs */
 #ifdef SEC_ASN1D_FREE_ON_ERROR		/*
 					 * XXX see comment below (by same
 					 * ifdef) that explains why this
@@ -220,7 +306,7 @@ struct sec_DecoderContext_struct {
  * XXX this is a fairly generic function that may belong elsewhere
  */
 static void *
-sec_asn1d_alloc (PRArenaPool *poolp, unsigned long len)
+sec_asn1d_alloc (PLArenaPool *poolp, unsigned long len)
 {
     void *thing;
 
@@ -244,7 +330,7 @@ sec_asn1d_alloc (PRArenaPool *poolp, unsigned long len)
  * XXX this is a fairly generic function that may belong elsewhere
  */
 static void *
-sec_asn1d_zalloc (PRArenaPool *poolp, unsigned long len)
+sec_asn1d_zalloc (PLArenaPool *poolp, unsigned long len)
 {
     void *thing;
 
@@ -274,12 +360,7 @@ sec_asn1d_push_state (SEC_ASN1DecoderContext *cx,
     new_state = (sec_asn1d_state*)sec_asn1d_zalloc (cx->our_pool, 
 						    sizeof(*new_state));
     if (new_state == NULL) {
-	cx->status = decodeError;
-	if (state != NULL) {
-	    PORT_ArenaRelease(cx->our_pool, state->our_mark);
-	    state->our_mark = NULL;
-	}
-	return NULL;
+	goto loser;
     }
 
     new_state->top         = cx;
@@ -291,13 +372,25 @@ sec_asn1d_push_state (SEC_ASN1DecoderContext *cx,
 
     if (state != NULL) {
 	new_state->depth = state->depth;
-	if (new_depth)
-	    new_state->depth++;
+	if (new_depth) {
+	    if (++new_state->depth > SEC_ASN1D_MAX_DEPTH) {
+		PORT_SetError (SEC_ERROR_BAD_DER);
+		goto loser;
+	    }
+	}
 	state->child = new_state;
     }
 
     cx->current = new_state;
     return new_state;
+
+loser:
+    cx->status = decodeError;
+    if (state != NULL) {
+	PORT_ArenaRelease(cx->our_pool, state->our_mark);
+	state->our_mark = NULL;
+    }
+    return NULL;
 }
 
 
@@ -412,10 +505,10 @@ sec_asn1d_init_state_based_on_template (sec_asn1d_state *state)
     encode_kind &= ~SEC_ASN1_DYNAMIC;
     encode_kind &= ~SEC_ASN1_MAY_STREAM;
 
-    if( encode_kind & SEC_ASN1_CHOICE ) {
+    if (encode_kind & SEC_ASN1_CHOICE) {
 #if 0	/* XXX remove? */
       sec_asn1d_state *child = sec_asn1d_push_state(state->top, state->theTemplate, state->dest, PR_FALSE);
-      if( (sec_asn1d_state *)NULL == child ) {
+      if ((sec_asn1d_state *)NULL == child) {
         return (sec_asn1d_state *)NULL;
       }
 
@@ -600,8 +693,8 @@ sec_asn1d_init_state_based_on_template (sec_asn1d_state *state)
     return state;
 }
 
-static PRBool
-sec_asn1d_parent_is_indefinite(sec_asn1d_state *state)
+static sec_asn1d_state *
+sec_asn1d_get_enclosing_construct(sec_asn1d_state *state)
 {
     for (state = state->parent; state; state = state->parent) {
 	sec_asn1d_parse_place place = state->place;
@@ -613,16 +706,27 @@ sec_asn1d_parent_is_indefinite(sec_asn1d_state *state)
 	    place != duringChoice) {
 
             /* we've walked up the stack to a state that represents
-            ** the enclosing construct.  Is it one of the types that
-            ** permits an unexpected EOC?
-            */
-            int eoc_permitted = 
-		(place == duringGroup ||
-		 place == duringConstructedString ||
-		 state->child->optional);
-            return (state->indefinite && eoc_permitted) ? PR_TRUE : PR_FALSE;
-
+            ** the enclosing construct.  
+	    */
+            break;
 	}
+    }
+    return state;
+}
+
+static PRBool
+sec_asn1d_parent_allows_EOC(sec_asn1d_state *state)
+{
+    /* get state of enclosing construct. */
+    state = sec_asn1d_get_enclosing_construct(state);
+    if (state) {
+	sec_asn1d_parse_place place = state->place;
+        /* Is it one of the types that permits an unexpected EOC? */
+	int eoc_permitted = 
+	    (place == duringGroup ||
+	     place == duringConstructedString ||
+	     state->child->optional);
+	return (state->indefinite && eoc_permitted) ? PR_TRUE : PR_FALSE;
     }
     return PR_FALSE;
 }
@@ -642,6 +746,13 @@ sec_asn1d_parse_identifier (sec_asn1d_state *state,
     }
 
     byte = (unsigned char) *buf;
+#ifdef DEBUG_ASN1D_STATES
+    {
+        char kindBuf[256];
+        formatKind(byte, kindBuf);
+        printf("Found tag %02x %s\n", byte, kindBuf);
+    }
+#endif
     tag_number = byte & SEC_ASN1_TAGNUM_MASK;
 
     if (IS_HIGH_TAG_NUMBER (tag_number)) {
@@ -654,7 +765,7 @@ sec_asn1d_parse_identifier (sec_asn1d_state *state,
 	 */
 	state->pending = 1;
     } else {
-	if (byte == 0 && sec_asn1d_parent_is_indefinite(state)) {
+	if (byte == 0 && sec_asn1d_parent_allows_EOC(state)) {
 	    /*
 	     * Our parent has indefinite-length encoding, and the
 	     * entire tag found is 0, so it seems that we have hit the
@@ -787,6 +898,17 @@ sec_asn1d_parse_length (sec_asn1d_state *state,
 	}
     }
 
+    /* If we're parsing an ANY, SKIP, or SAVE template, and 
+    ** the object being saved is definite length encoded and constructed, 
+    ** there's no point in decoding that construct's members.
+    ** So, just forget it's constructed and treat it as primitive.
+    ** (SAVE appears as an ANY at this point)
+    */
+    if (!state->indefinite &&
+	(state->underlying_kind & (SEC_ASN1_ANY | SEC_ASN1_SKIP))) {
+	state->found_tag_modifiers &= ~SEC_ASN1_CONSTRUCTED;
+    }
+
     return 1;
 }
 
@@ -808,7 +930,7 @@ sec_asn1d_parse_more_length (sec_asn1d_state *state,
     count = 0;
 
     while (len && state->pending) {
-	if (HIGH_BITS (state->contents_length, 8) != 0) {
+	if (HIGH_BITS (state->contents_length, 9) != 0) {
 	    /*
 	     * The given full content length overflows our container;
 	     * just give up.
@@ -831,14 +953,105 @@ sec_asn1d_parse_more_length (sec_asn1d_state *state,
     return count;
 }
 
+/*
+ * Helper function for sec_asn1d_prepare_for_contents.
+ * Checks that a value representing a number of bytes consumed can be
+ * subtracted from a remaining length. If so, returns PR_TRUE.
+ * Otherwise, sets the error SEC_ERROR_BAD_DER, indicates that there was a
+ * decoding error in the given SEC_ASN1DecoderContext, and returns PR_FALSE.
+ */
+static PRBool
+sec_asn1d_check_and_subtract_length (unsigned long *remaining,
+                                     unsigned long consumed,
+                                     SEC_ASN1DecoderContext *cx)
+{
+    PORT_Assert(remaining);
+    PORT_Assert(cx);
+    if (!remaining || !cx) {
+        PORT_SetError (SEC_ERROR_INVALID_ARGS);
+        cx->status = decodeError;
+        return PR_FALSE;
+    }
+    if (*remaining < consumed) {
+        PORT_SetError (SEC_ERROR_BAD_DER);
+        cx->status = decodeError;
+        return PR_FALSE;
+    }
+    *remaining -= consumed;
+    return PR_TRUE;
+}
 
 static void
 sec_asn1d_prepare_for_contents (sec_asn1d_state *state)
 {
     SECItem *item;
-    PRArenaPool *poolp;
+    PLArenaPool *poolp;
     unsigned long alloc_len;
+    sec_asn1d_state *parent;
 
+#ifdef DEBUG_ASN1D_STATES
+    {
+        printf("Found Length %d %s\n", state->contents_length,
+               state->indefinite ? "indefinite" : "");
+    }
+#endif
+
+    /**
+     * The maximum length for a child element should be constrained to the
+     * length remaining in the first definite length element in the ancestor
+     * stack. If there is no definite length element in the ancestor stack,
+     * there's nothing to constrain the length of the child, so there's no
+     * further processing necessary.
+     *
+     * It's necessary to walk the ancestor stack, because it's possible to have
+     * definite length children that are part of an indefinite length element,
+     * which is itself part of an indefinite length element, and which is
+     * ultimately part of a definite length element. A simple example of this
+     * would be the handling of constructed OCTET STRINGs in BER encoding.
+     *
+     * This algorithm finds the first definite length element in the ancestor
+     * stack, if any, and if so, ensures that the length of the child element
+     * is consistent with the number of bytes remaining in the constraining
+     * ancestor element (that is, after accounting for any other sibling
+     * elements that may have been read).
+     *
+     * It's slightly complicated by the need to account both for integer
+     * underflow and overflow, as well as ensure that for indefinite length
+     * encodings, there's also enough space for the End-of-Contents (EOC)
+     * octets (Tag = 0x00, Length = 0x00, or two bytes).
+     */
+
+    /* Determine the maximum length available for this element by finding the
+     * first definite length ancestor, if any. */
+    parent = sec_asn1d_get_enclosing_construct(state);
+    while (parent && parent->indefinite) {
+        parent = sec_asn1d_get_enclosing_construct(parent);
+    }
+    /* If parent is null, state is either the outermost state / at the top of
+     * the stack, or the outermost state uses indefinite length encoding. In
+     * these cases, there's nothing external to constrain this element, so
+     * there's nothing to check. */
+    if (parent) {
+        unsigned long remaining = parent->pending;
+        parent = state;
+        do {
+            if (!sec_asn1d_check_and_subtract_length(
+                     &remaining, parent->consumed, state->top) ||
+                /* If parent->indefinite is true, parent->contents_length is
+                 * zero and this is a no-op. */
+                !sec_asn1d_check_and_subtract_length(
+                     &remaining, parent->contents_length, state->top) ||
+                /* If parent->indefinite is true, then ensure there is enough
+                 * space for an EOC tag of 2 bytes. */
+                (parent->indefinite && !sec_asn1d_check_and_subtract_length(
+                                            &remaining, 2, state->top))) {
+                /* This element is larger than its enclosing element, which is
+                 * invalid. */
+                return;
+            }
+        } while ((parent = sec_asn1d_get_enclosing_construct(parent)) &&
+                 parent->indefinite);
+    }
 
     /*
      * XXX I cannot decide if this allocation should exclude the case
@@ -967,6 +1180,7 @@ sec_asn1d_prepare_for_contents (sec_asn1d_state *state)
 	 * implement this because in practice, it seems to be unused.
 	 */
 	PORT_Assert(0);
+	PORT_SetError (SEC_ERROR_BAD_DER); /* XXX */
 	state->top->status = decodeError;
 	break;
 
@@ -976,6 +1190,7 @@ sec_asn1d_prepare_for_contents (sec_asn1d_state *state)
 	 * An indefinite-length encoding is not alloweed.
 	 */
 	if (state->contents_length || state->indefinite) {
+	    PORT_SetError (SEC_ERROR_BAD_DER);
 	    state->top->status = decodeError;
 	    break;
 	}
@@ -990,6 +1205,7 @@ sec_asn1d_prepare_for_contents (sec_asn1d_state *state)
       case SEC_ASN1_BMP_STRING:
 	/* Error if length is not divisable by 2 */
 	if (state->contents_length % 2) {
+	   PORT_SetError (SEC_ERROR_BAD_DER);
 	   state->top->status = decodeError;
 	   break;
 	}   
@@ -999,6 +1215,7 @@ sec_asn1d_prepare_for_contents (sec_asn1d_state *state)
       case SEC_ASN1_UNIVERSAL_STRING:
 	/* Error if length is not divisable by 4 */
 	if (state->contents_length % 4) {
+	   PORT_SetError (SEC_ERROR_BAD_DER);
 	   state->top->status = decodeError;
 	   break;
 	}   
@@ -1077,6 +1294,12 @@ regular_string_type:
 	    struct subitem *subitem;
 	    int len;
 
+	    PORT_Assert (item);
+	    if (!item) {
+		PORT_SetError (SEC_ERROR_BAD_DER);
+		state->top->status = decodeError;
+		return;
+	    }
 	    PORT_Assert (item->len == 0 && item->data == NULL);
 	    /*
 	     * Check for and handle an ANY which has stashed aside the
@@ -1229,7 +1452,7 @@ sec_asn1d_free_child (sec_asn1d_state *state, PRBool error)
     if (state->child != NULL) {
 	PORT_Assert (error || state->child->consumed == 0);
 	PORT_Assert (state->our_mark != NULL);
-	PORT_ArenaRelease (state->top->our_pool, state->our_mark);
+	PORT_ArenaZRelease (state->top->our_pool, state->our_mark);
 	if (error && state->top->their_pool == NULL) {
 	    /*
 	     * XXX We need to free anything allocated.
@@ -1255,7 +1478,17 @@ sec_asn1d_free_child (sec_asn1d_state *state, PRBool error)
     state->place = beforeEndOfContents;
 }
 
-
+/* We have just saved an entire encoded ASN.1 object (type) for a SAVE 
+** template, and now in the next template, we are going to decode that 
+** saved data  by calling SEC_ASN1DecoderUpdate recursively.
+** If that recursive call fails with needBytes, it is a fatal error,
+** because the encoded object should have been complete.
+** If that recursive call fails with decodeError, it will have already
+** cleaned up the state stack, so we must bail out quickly.
+**
+** These checks of the status returned by the recursive call are now
+** done in the caller of this function, immediately after it returns.
+*/
 static void
 sec_asn1d_reuse_encoding (sec_asn1d_state *state)
 {
@@ -1321,6 +1554,9 @@ sec_asn1d_reuse_encoding (sec_asn1d_state *state)
     if (SEC_ASN1DecoderUpdate (state->top,
 			       (char *) item->data, item->len) != SECSuccess)
 	return;
+    if (state->top->status == needBytes) {
+	return;
+    }
 
     PORT_Assert (state->top->current == state);
     PORT_Assert (state->child == child);
@@ -1359,6 +1595,7 @@ sec_asn1d_parse_leaf (sec_asn1d_state *state,
 
     item = (SECItem *)(state->dest);
     if (item != NULL && item->data != NULL) {
+	unsigned long offset;
 	/* Strip leading zeroes when target is unsigned integer */
 	if (state->underlying_kind == SEC_ASN1_INTEGER && /* INTEGER   */
 	    item->len == 0 &&                             /* MSB       */
@@ -1369,8 +1606,42 @@ sec_asn1d_parse_leaf (sec_asn1d_state *state,
 		len--;
 	    }
 	}
-	PORT_Memcpy (item->data + item->len, buf, len);
-	item->len += len;
+        offset = item->len;
+        if (state->underlying_kind == SEC_ASN1_BIT_STRING) {
+            // The previous bit string must have no unused bits.
+            if (item->len & 0x7) {
+                PORT_SetError (SEC_ERROR_BAD_DER);
+                state->top->status = decodeError;
+                return 0;
+            }
+            // If this is a bit string, the length is bits, not bytes.
+            offset = item->len >> 3;
+        }
+        if (state->underlying_kind == SEC_ASN1_BIT_STRING) {
+            unsigned long len_in_bits;
+            // Protect against overflow during the bytes-to-bits conversion.
+            if (len >= (ULONG_MAX >> 3) + 1) {
+                PORT_SetError (SEC_ERROR_BAD_DER);
+                state->top->status = decodeError;
+                return 0;
+            }
+            len_in_bits = (len << 3) - state->bit_string_unused_bits;
+            // Protect against overflow when computing the total length in bits.
+            if (UINT_MAX - item->len < len_in_bits) {
+                PORT_SetError (SEC_ERROR_BAD_DER);
+                state->top->status = decodeError;
+                return 0;
+            }
+            item->len += len_in_bits;
+        } else {
+            if (UINT_MAX - item->len < len) {
+                PORT_SetError (SEC_ERROR_BAD_DER);
+                state->top->status = decodeError;
+                return 0;
+            }
+            item->len += len;
+        }
+        PORT_Memcpy (item->data + offset, buf, len);
     }
     state->pending -= bufLen;
     if (state->pending == 0)
@@ -1423,18 +1694,20 @@ static unsigned long
 sec_asn1d_parse_more_bit_string (sec_asn1d_state *state,
 				 const char *buf, unsigned long len)
 {
-    PORT_Assert (state->pending > 0);
     PORT_Assert (state->place == duringBitString);
-
-    len = sec_asn1d_parse_leaf (state, buf, len);
-    if (state->place == beforeEndOfContents && state->dest != NULL) {
-	SECItem *item;
-
-	item = (SECItem *)(state->dest);
-	if (item->len)
-	    item->len = (item->len << 3) - state->bit_string_unused_bits;
+    if (state->pending == 0) {
+	/* An empty bit string with some unused bits is invalid. */
+	if (state->bit_string_unused_bits) {
+	    PORT_SetError (SEC_ERROR_BAD_DER);
+	    state->top->status = decodeError;
+	} else {
+	    /* An empty bit string with no unused bits is OK. */
+	    state->place = beforeEndOfContents;
+	}
+	return 0;
     }
 
+    len = sec_asn1d_parse_leaf (state, buf, len);
     return len;
 }
 
@@ -1462,6 +1735,8 @@ sec_asn1d_add_to_subitems (sec_asn1d_state *state,
 	copy = sec_asn1d_alloc (state->top->our_pool, len);
 	if (copy == NULL) {
 	    state->top->status = decodeError;
+	    if (!state->top->our_pool)
+	    	PORT_Free(thing);
 	    return NULL;
 	}
 	PORT_Memcpy (copy, data, len);
@@ -1534,7 +1809,7 @@ sec_asn1d_next_substring (sec_asn1d_state *state)
 
     if (state->pending) {
 	PORT_Assert (!state->indefinite);
-	if( child_consumed > state->pending ) {
+	if (child_consumed > state->pending) {
 	    PORT_SetError (SEC_ERROR_BAD_DER);
 	    state->top->status = decodeError;
 	    return;
@@ -1544,10 +1819,107 @@ sec_asn1d_next_substring (sec_asn1d_state *state)
 	if (state->pending == 0)
 	    done = PR_TRUE;
     } else {
+	PRBool preallocatedString;
+	sec_asn1d_state *temp_state;
 	PORT_Assert (state->indefinite);
 
 	item = (SECItem *)(child->dest);
-	if (item != NULL && item->data != NULL) {
+
+	/**
+	 * At this point, there's three states at play:
+	 *   child: The element that was just parsed
+	 *   state: The currently processed element
+	 *   'parent' (aka state->parent): The enclosing construct
+	 *      of state, or NULL if this is the top-most element.
+	 *
+	 * This state handles both substrings of a constructed string AND
+	 * child elements of items whose template type was that of
+	 * SEC_ASN1_ANY, SEC_ASN1_SAVE, SEC_ASN1_ANY_CONTENTS, SEC_ASN1_SKIP
+	 * template, as described in sec_asn1d_prepare_for_contents. For
+	 * brevity, these will be referred to as 'string' and 'any' types.
+	 *
+	 * This leads to the following possibilities:
+	 *   1: This element is an indefinite length string, part of a
+	 *      definite length string.
+	 *   2: This element is an indefinite length string, part of an
+	 *      indefinite length string.
+	 *   3: This element is an indefinite length any, part of a
+	 *      definite length any.
+	 *   4: This element is an indefinite length any, part of an
+	 *      indefinite length any.
+	 *   5: This element is an indefinite length any and does not
+	 *      meet any of the above criteria. Note that this would include
+	 *      an indefinite length string type matching an indefinite
+	 *      length any template.
+	 *
+	 * In Cases #1 and #3, the definite length 'parent' element will
+	 * have allocated state->dest based on the parent elements definite
+	 * size. During the processing of 'child', sec_asn1d_parse_leaf will
+	 * have copied the (string, any) data directly into the offset of
+	 * dest, as appropriate, so there's no need for this class to still
+	 * store the child - it's already been processed.
+	 *
+	 * In Cases #2 and #4, dest will be set to the parent element's dest,
+	 * but dest->data will not have been allocated yet, due to the
+	 * indefinite length encoding. In this situation, it's necessary to
+	 * hold onto child (and all other children) until the EOC, at which
+	 * point, it becomes possible to compute 'state's overall length. Once
+	 * 'state' has a computed length, this can then be fed to 'parent' (via
+	 * this state), and then 'parent' can similarly compute the length of
+	 * all of its children up to the EOC, which will ultimately transit to
+	 * sec_asn1d_concat_substrings, determine the overall size needed,
+	 * allocate, and copy the contents (of all of parent's children, which
+	 * would include 'state', just as 'state' will have copied all of its
+	 * children via sec_asn1d_concat_substrings)
+	 *
+	 * The final case, Case #5, will manifest in that item->data and
+	 * item->len will be NULL/0, respectively, since this element was
+	 * indefinite-length encoded. In that case, both the tag and length will
+	 * already exist in state's subitems, via sec_asn1d_record_any_header,
+	 * and so the contents (aka 'child') should be added to that list of
+	 * items to concatenate in sec_asn1d_concat_substrings once the EOC
+	 * is encountered.
+	 *
+	 * To distinguish #2/#4 from #1/#3, it's sufficient to walk the ancestor
+	 * tree. If the current type is a string type, then the enclosing
+	 * construct will be that same type (#1/#2). If the current type is an
+	 * any type, then the enclosing construct is either an any type (#3/#4)
+	 * or some other type (#5). Since this is BER, this nesting relationship
+	 * between 'state' and 'parent' may go through several levels of
+	 * constructed encoding, so continue walking the ancestor chain until a
+	 * clear determination can be made.
+	 *
+	 * The variable preallocatedString is used to indicate Case #1/#3,
+	 * indicating an in-place copy has already occurred, and Cases #2, #4,
+	 * and #5 all have the same behaviour of adding a new substring.
+	 */
+	preallocatedString = PR_FALSE;
+	temp_state = state;
+	while (temp_state && item == temp_state->dest && temp_state->indefinite) {
+	    sec_asn1d_state *parent = sec_asn1d_get_enclosing_construct(temp_state);
+	    if (!parent || parent->underlying_kind != temp_state->underlying_kind) {
+	        /* Case #5 - Either this is a top-level construct or it is part
+	         * of some other element (e.g. a SEQUENCE), in which case, a
+	         * new item should be allocated. */
+	        break;
+	    }
+	    if (!parent->indefinite) {
+	        /* Cases #1 / #3 - A definite length ancestor exists, for which
+	         * this is a substring that has already copied into dest. */
+	        preallocatedString = PR_TRUE;
+	        break;
+	    }
+	    if (!parent->substring) {
+	        /* Cases #2 / #4 - If the parent is not a substring, but is
+	         * indefinite, then there's nothing further up that may have
+	         * preallocated dest, thus child will not have already
+		 * been copied in place, therefore it's necessary to save child
+		 * as a subitem. */
+	        break;
+	    }
+	    temp_state = parent;
+	}
+	if (item != NULL && item->data != NULL && !preallocatedString) {
 	    /*
 	     * Save the string away for later concatenation.
 	     */
@@ -1653,7 +2025,7 @@ sec_asn1d_next_in_group (sec_asn1d_state *state)
      */
     if (state->pending) {
 	PORT_Assert (!state->indefinite);
-	if( child_consumed > state->pending ) {
+	if (child_consumed > state->pending) {
 	    PORT_SetError (SEC_ERROR_BAD_DER);
 	    state->top->status = decodeError;
 	    return;
@@ -1723,7 +2095,7 @@ sec_asn1d_next_in_sequence (sec_asn1d_state *state)
 	sec_asn1d_free_child (child, PR_FALSE);
 	if (state->pending) {
 	    PORT_Assert (!state->indefinite);
-	    if( child_consumed > state->pending ) {
+	    if (child_consumed > state->pending) {
 		PORT_SetError (SEC_ERROR_BAD_DER);
 		state->top->status = decodeError;
 		return;
@@ -1772,7 +2144,7 @@ sec_asn1d_next_in_sequence (sec_asn1d_state *state)
 	     */
 	    if (state->indefinite && child->endofcontents) {
 		PORT_Assert (child_consumed == 2);
-		if( child_consumed != 2 ) {
+		if (child_consumed != 2) {
 		    PORT_SetError (SEC_ERROR_BAD_DER);
 		    state->top->status = decodeError;
 		} else {
@@ -1811,7 +2183,7 @@ sec_asn1d_next_in_sequence (sec_asn1d_state *state)
 	}
 	state->top->current = child;
 	child = sec_asn1d_init_state_based_on_template (child);
-	if (child_missing) {
+	if (child_missing && child) {
 	    child->place = afterIdentifier;
 	    child->found_tag_modifiers = child_found_tag_modifiers;
 	    child->found_tag_number = child_found_tag_number;
@@ -1865,7 +2237,7 @@ sec_asn1d_concat_substrings (sec_asn1d_state *state)
 	     * All bit-string substrings except the last one should be
 	     * a clean multiple of 8 bits.
 	     */
-	    if (is_bit_string && (substring->next == NULL)
+	    if (is_bit_string && (substring->next != NULL)
 			      && (substring->len & 0x7)) {
 		PORT_SetError (SEC_ERROR_BAD_DER);
 		state->top->status = decodeError;
@@ -1876,11 +2248,7 @@ sec_asn1d_concat_substrings (sec_asn1d_state *state)
 	}
 
 	if (is_bit_string) {
-#ifdef XP_WIN16		/* win16 compiler gets an internal error otherwise */
-	    alloc_len = (((long)item_len + 7) / 8);
-#else
 	    alloc_len = ((item_len + 7) >> 3);
-#endif
 	} else {
 	    /*
 	     * Add 2 for the end-of-contents octets of an indefinite-length
@@ -1992,13 +2360,9 @@ sec_asn1d_absorb_child (sec_asn1d_state *state)
     /*
      * Inherit the missing status of our child, and do the ugly
      * backing-up if necessary.
-     * (Only IMPLICIT or POINTER should encounter such; all other cases
-     * should have confirmed a tag *before* pushing a child.)
      */
     state->missing = state->child->missing;
     if (state->missing) {
-	PORT_Assert (state->place == afterImplicit
-		     || state->place == afterPointer);
 	state->found_tag_number = state->child->found_tag_number;
 	state->found_tag_modifiers = state->child->found_tag_modifiers;
 	state->endofcontents = state->child->endofcontents;
@@ -2126,7 +2490,7 @@ sec_asn1d_pop_state (sec_asn1d_state *state)
 	state->consumed += state->child->consumed;
 	if (state->pending) {
 	    PORT_Assert (!state->indefinite);
-	    if( state->child->consumed > state->pending ) {
+	    if (state->child->consumed > state->pending) {
 		PORT_SetError (SEC_ERROR_BAD_DER);
 		state->top->status = decodeError;
 	    } else {
@@ -2150,57 +2514,53 @@ sec_asn1d_pop_state (sec_asn1d_state *state)
 }
 
 static sec_asn1d_state *
-sec_asn1d_before_choice
-(
-  sec_asn1d_state *state
-)
+sec_asn1d_before_choice (sec_asn1d_state *state)
 {
-  sec_asn1d_state *child;
+    sec_asn1d_state *child;
 
-  if( state->allocate ) {
-    void *dest;
+    if (state->allocate) {
+	void *dest;
 
-    dest = sec_asn1d_zalloc(state->top->their_pool, state->theTemplate->size);
-    if( (void *)NULL == dest ) {
-      state->top->status = decodeError;
-      return (sec_asn1d_state *)NULL;
+	dest = sec_asn1d_zalloc(state->top->their_pool, state->theTemplate->size);
+	if ((void *)NULL == dest) {
+	    state->top->status = decodeError;
+	    return (sec_asn1d_state *)NULL;
+	}
+
+	state->dest = (char *)dest + state->theTemplate->offset;
     }
 
-    state->dest = (char *)dest + state->theTemplate->offset;
-  }
+    child = sec_asn1d_push_state(state->top, state->theTemplate + 1, 
+				 (char *)state->dest - state->theTemplate->offset, 
+				 PR_FALSE);
+    if ((sec_asn1d_state *)NULL == child) {
+	return (sec_asn1d_state *)NULL;
+    }
 
-  child = sec_asn1d_push_state(state->top, state->theTemplate + 1, 
-                               state->dest, PR_FALSE);
-  if( (sec_asn1d_state *)NULL == child ) {
-    return (sec_asn1d_state *)NULL;
-  }
+    sec_asn1d_scrub_state(child);
+    child = sec_asn1d_init_state_based_on_template(child);
+    if ((sec_asn1d_state *)NULL == child) {
+	return (sec_asn1d_state *)NULL;
+    }
 
-  sec_asn1d_scrub_state(child);
-  child = sec_asn1d_init_state_based_on_template(child);
-  if( (sec_asn1d_state *)NULL == child ) {
-    return (sec_asn1d_state *)NULL;
-  }
+    child->optional = PR_TRUE;
 
-  child->optional = PR_TRUE;
+    state->place = duringChoice;
 
-  state->place = duringChoice;
-
-  return child;
+    return child;
 }
 
 static sec_asn1d_state *
-sec_asn1d_during_choice
-(
-  sec_asn1d_state *state
-)
+sec_asn1d_during_choice (sec_asn1d_state *state)
 {
-  sec_asn1d_state *child = state->child;
-  
-  PORT_Assert((sec_asn1d_state *)NULL != child);
+    sec_asn1d_state *child = state->child;
+    
+    PORT_Assert((sec_asn1d_state *)NULL != child);
 
-  if( child->missing ) {
-    unsigned char child_found_tag_modifiers = 0;
-    unsigned long child_found_tag_number = 0;
+    if (child->missing) {
+	unsigned char child_found_tag_modifiers = 0;
+	unsigned long child_found_tag_number = 0;
+	void *        dest;
 
 	state->consumed += child->consumed;
 
@@ -2208,94 +2568,92 @@ sec_asn1d_during_choice
 	    /* This choice is probably the first item in a GROUP
 	    ** (e.g. SET_OF) that was indefinite-length encoded.
 	    ** We're actually at the end of that GROUP.
-	    ** We should look up the stack to be sure that we find
+	    ** We look up the stack to be sure that we find
 	    ** a state with indefinite length encoding before we
 	    ** find a state (like a SEQUENCE) that is definite.
 	    */
 	    child->place = notInUse;
 	    state->place = afterChoice;
 	    state->endofcontents = PR_TRUE;  /* propagate this up */
-	    if (sec_asn1d_parent_is_indefinite(state))
+	    if (sec_asn1d_parent_allows_EOC(state))
 		return state;
 	    PORT_SetError(SEC_ERROR_BAD_DER);
 	    state->top->status = decodeError;
 	    return NULL;
 	}
 
-    child->theTemplate++;
+	dest = (char *)child->dest - child->theTemplate->offset;
+	child->theTemplate++;
 
-    if( 0 == child->theTemplate->kind ) {
-      /* Ran out of choices */
-      PORT_SetError(SEC_ERROR_BAD_DER);
-      state->top->status = decodeError;
-      return (sec_asn1d_state *)NULL;
-    }
+	if (0 == child->theTemplate->kind) {
+	    /* Ran out of choices */
+	    PORT_SetError(SEC_ERROR_BAD_DER);
+	    state->top->status = decodeError;
+	    return (sec_asn1d_state *)NULL;
+	}
+	child->dest = (char *)dest + child->theTemplate->offset;
 
-    /* cargo'd from next_in_sequence innards */
-    if( state->pending ) {
-      PORT_Assert(!state->indefinite);
-      if( child->consumed > state->pending ) {
-	PORT_SetError (SEC_ERROR_BAD_DER);
-	state->top->status = decodeError;
-	return NULL;
-      }
-      state->pending -= child->consumed;
-      if( 0 == state->pending ) {
-        /* XXX uh.. not sure if I should have stopped this
-         * from happening before. */
-        PORT_Assert(0);
-        PORT_SetError(SEC_ERROR_BAD_DER);
-        state->top->status = decodeError;
-        return (sec_asn1d_state *)NULL;
-      }
-    }
+	/* cargo'd from next_in_sequence innards */
+	if (state->pending) {
+	    PORT_Assert(!state->indefinite);
+	    if (child->consumed > state->pending) {
+		PORT_SetError (SEC_ERROR_BAD_DER);
+		state->top->status = decodeError;
+		return NULL;
+	    }
+	    state->pending -= child->consumed;
+	    if (0 == state->pending) {
+		/* XXX uh.. not sure if I should have stopped this
+		 * from happening before. */
+		PORT_Assert(0);
+		PORT_SetError(SEC_ERROR_BAD_DER);
+		state->top->status = decodeError;
+		return (sec_asn1d_state *)NULL;
+	    }
+	}
 
-    child->consumed = 0;
-    sec_asn1d_scrub_state(child);
+	child->consumed = 0;
+	sec_asn1d_scrub_state(child);
 
-    /* move it on top again */
-    state->top->current = child;
+	/* move it on top again */
+	state->top->current = child;
 
-    child_found_tag_modifiers = child->found_tag_modifiers;
-    child_found_tag_number = child->found_tag_number;
+	child_found_tag_modifiers = child->found_tag_modifiers;
+	child_found_tag_number = child->found_tag_number;
 
-    child = sec_asn1d_init_state_based_on_template(child);
-    if( (sec_asn1d_state *)NULL == child ) {
-      return (sec_asn1d_state *)NULL;
-    }
+	child = sec_asn1d_init_state_based_on_template(child);
+	if ((sec_asn1d_state *)NULL == child) {
+	    return (sec_asn1d_state *)NULL;
+	}
 
-    /* copy our findings to the new top */
-    child->found_tag_modifiers = child_found_tag_modifiers;
-    child->found_tag_number = child_found_tag_number;
+	/* copy our findings to the new top */
+	child->found_tag_modifiers = child_found_tag_modifiers;
+	child->found_tag_number = child_found_tag_number;
 
-    child->optional = PR_TRUE;
-    child->place = afterIdentifier;
+	child->optional = PR_TRUE;
+	child->place = afterIdentifier;
 
-    return child;
-  } else {
-    if( (void *)NULL != state->dest ) {
-      /* Store the enum */
-      int *which = (int *)((char *)state->dest + state->theTemplate->offset);
-      *which = (int)child->theTemplate->size;
+	return child;
+    } 
+    if ((void *)NULL != state->dest) {
+	/* Store the enum */
+	int *which = (int *)state->dest;
+	*which = (int)child->theTemplate->size;
     }
 
     child->place = notInUse;
 
     state->place = afterChoice;
     return state;
-  }
 }
 
 static void
-sec_asn1d_after_choice
-(
-  sec_asn1d_state *state
-)
+sec_asn1d_after_choice (sec_asn1d_state *state)
 {
-  state->consumed += state->child->consumed;
-  state->child->consumed = 0;
-  state->place = afterEndOfContents;
-  sec_asn1d_pop_state(state);
+    state->consumed += state->child->consumed;
+    state->child->consumed = 0;
+    state->place = afterEndOfContents;
+    sec_asn1d_pop_state(state);
 }
 
 unsigned long
@@ -2353,29 +2711,42 @@ SEC_ASN1DecodeInteger(SECItem *src, unsigned long *value)
 
 #ifdef DEBUG_ASN1D_STATES
 static void
-dump_states
-(
-  SEC_ASN1DecoderContext *cx
-)
+dump_states(SEC_ASN1DecoderContext *cx)
 {
-  sec_asn1d_state *state;
+    sec_asn1d_state *state;
+    char kindBuf[256];
 
-  for( state = cx->current; state->parent; state = state->parent ) {
-    ;
-  }
-
-  for( ; state; state = state->child ) {
-    int i;
-    for( i = 0; i < state->depth; i++ ) {
-      printf("  ");
+    for (state = cx->current; state->parent; state = state->parent) {
+        ;
     }
 
-    printf("%s: template[0]->kind = 0x%02x, expect tag number = 0x%02x\n",
-           (state == cx->current) ? "STATE" : "State",
-           state->theTemplate->kind, state->expect_tag_number);
-  }
+    for (; state; state = state->child) {
+        int i;
+        for (i = 0; i < state->depth; i++) {
+            printf("  ");
+        }
 
-  return;
+        i = formatKind(state->theTemplate->kind, kindBuf);
+        printf("%s: tmpl %08x, kind%s",
+               (state == cx->current) ? "STATE" : "State",
+               state->theTemplate,
+               kindBuf);
+        printf(" %s", (state->place >= 0 && state->place <= notInUse)
+                       ? place_names[ state->place ]
+                       : "(undefined)");
+        if (!i)
+            printf(", expect 0x%02x",
+                   state->expect_tag_number | state->expect_tag_modifiers);
+
+        printf("%s%s%s %d\n",
+               state->indefinite    ? ", indef"   : "",
+               state->missing       ? ", miss"    : "",
+               state->endofcontents ? ", EOC"     : "",
+               state->pending
+               );
+    }
+
+    return;
 }
 #endif /* DEBUG_ASN1D_STATES */
 
@@ -2396,10 +2767,11 @@ SEC_ASN1DecoderUpdate (SEC_ASN1DecoderContext *cx,
 	what = SEC_ASN1_Contents;
 	consumed = 0;
 #ifdef DEBUG_ASN1D_STATES
-        printf("\nPLACE = %s, next byte = 0x%02x\n",
+        printf("\nPLACE = %s, next byte = 0x%02x, %08x[%d]\n",
                (state->place >= 0 && state->place <= notInUse) ?
                place_names[ state->place ] : "(undefined)",
-               (unsigned int)((unsigned char *)buf)[ consumed ]);
+               (unsigned int)((unsigned char *)buf)[ consumed ],
+               buf, consumed);
         dump_states(cx);
 #endif /* DEBUG_ASN1D_STATES */
 	switch (state->place) {
@@ -2442,6 +2814,17 @@ SEC_ASN1DecoderUpdate (SEC_ASN1DecoderContext *cx,
 	    break;
 	  case duringSaveEncoding:
 	    sec_asn1d_reuse_encoding (state);
+	    if (cx->status == decodeError) {
+		/* recursive call has already popped all states from stack.
+		** Bail out quickly.
+		*/
+		return SECFailure;
+	    }
+	    if (cx->status == needBytes) {
+		/* recursive call wanted more data. Fatal. Clean up below. */
+		PORT_SetError (SEC_ERROR_BAD_DER);
+		cx->status = decodeError;
+	    }
 	    break;
 	  case duringSequence:
 	    sec_asn1d_next_in_sequence (state);
@@ -2459,7 +2842,10 @@ SEC_ASN1DecoderUpdate (SEC_ASN1DecoderContext *cx,
 	    sec_asn1d_concat_group (state);
 	    break;
 	  case afterSaveEncoding:
-	    /* XXX comment! */
+	    /* SEC_ASN1DecoderUpdate has called itself recursively to 
+	    ** decode SAVEd encoded data, and now is done decoding that.
+	    ** Return to the calling copy of SEC_ASN1DecoderUpdate.
+	    */
 	    return SECSuccess;
 	  case beforeEndOfContents:
 	    sec_asn1d_prepare_for_end_of_contents (state);
@@ -2494,7 +2880,7 @@ SEC_ASN1DecoderUpdate (SEC_ASN1DecoderContext *cx,
 
 	/* We should not consume more than we have.  */
 	PORT_Assert (consumed <= len);
-	if( consumed > len ) {
+	if (consumed > len) {
 	    PORT_SetError (SEC_ERROR_BAD_DER);
 	    cx->status = decodeError;
 	    break;
@@ -2511,9 +2897,10 @@ SEC_ASN1DecoderUpdate (SEC_ASN1DecoderContext *cx,
 	 * length which is greater than the entire encoding.  So, we cannot
 	 * have this be an error.
 	 */
-	    if (len > 0)
+	    if (len > 0) {
+		PORT_SetError (SEC_ERROR_BAD_DER);
 		cx->status = decodeError;
-	    else
+	    } else
 #endif
 		cx->status = allDone;
 	    break;
@@ -2581,6 +2968,7 @@ SEC_ASN1DecoderUpdate (SEC_ASN1DecoderContext *cx,
 	if (cx->their_pool != NULL) {
 	    PORT_Assert (cx->their_mark != NULL);
 	    PORT_ArenaRelease (cx->their_pool, cx->their_mark);
+	    cx->their_mark = NULL;
 	}
 #endif
 	return SECFailure;
@@ -2620,17 +3008,17 @@ SEC_ASN1DecoderFinish (SEC_ASN1DecoderContext *cx)
      * XXX anything else that needs to be finished?
      */
 
-    PORT_FreeArena (cx->our_pool, PR_FALSE);
+    PORT_FreeArena (cx->our_pool, PR_TRUE);
 
     return rv;
 }
 
 
 SEC_ASN1DecoderContext *
-SEC_ASN1DecoderStart (PRArenaPool *their_pool, void *dest,
+SEC_ASN1DecoderStart (PLArenaPool *their_pool, void *dest,
 		      const SEC_ASN1Template *theTemplate)
 {
-    PRArenaPool *our_pool;
+    PLArenaPool *our_pool;
     SEC_ASN1DecoderContext *cx;
 
     our_pool = PORT_NewArena (SEC_ASN1_DEFAULT_ARENA_SIZE);
@@ -2709,9 +3097,17 @@ SEC_ASN1DecoderClearNotifyProc (SEC_ASN1DecoderContext *cx)
     cx->notify_arg = NULL;	/* not necessary; just being clean */
 }
 
+void
+SEC_ASN1DecoderAbort(SEC_ASN1DecoderContext *cx, int error)
+{
+    PORT_Assert(cx);
+    PORT_SetError(error);
+    cx->status = decodeError;
+}
+
 
 SECStatus
-SEC_ASN1Decode (PRArenaPool *poolp, void *dest,
+SEC_ASN1Decode (PLArenaPool *poolp, void *dest,
 		const SEC_ASN1Template *theTemplate,
 		const char *buf, long len)
 {
@@ -2733,14 +3129,21 @@ SEC_ASN1Decode (PRArenaPool *poolp, void *dest,
 
 
 SECStatus
-SEC_ASN1DecodeItem (PRArenaPool *poolp, void *dest,
+SEC_ASN1DecodeItem (PLArenaPool *poolp, void *dest,
 		    const SEC_ASN1Template *theTemplate,
-		    SECItem *item)
+		    const SECItem *src)
 {
     return SEC_ASN1Decode (poolp, dest, theTemplate,
-			   (char *) item->data, item->len);
+			   (const char *)src->data, src->len);
 }
 
+#ifdef DEBUG_ASN1D_STATES
+void sec_asn1d_Assert(const char *s, const char *file, PRIntn ln)
+{
+    printf("Assertion failed, \"%s\", file %s, line %d\n", s, file, ln);
+    fflush(stdout);
+}
+#endif
 
 /*
  * Generic templates for individual/simple items and pointers to
@@ -2758,25 +3161,11 @@ SEC_ASN1DecodeItem (PRArenaPool *poolp, void *dest,
  *	the appropriate place.
  */
 
-const SEC_ASN1Template SEC_AnyTemplate[] = {
-    { SEC_ASN1_ANY | SEC_ASN1_MAY_STREAM, 0, NULL, sizeof(SECItem) }
-};
-
-const SEC_ASN1Template SEC_PointerToAnyTemplate[] = {
-    { SEC_ASN1_POINTER, 0, SEC_AnyTemplate }
-};
-
 const SEC_ASN1Template SEC_SequenceOfAnyTemplate[] = {
     { SEC_ASN1_SEQUENCE_OF, 0, SEC_AnyTemplate }
 };
 
-const SEC_ASN1Template SEC_SetOfAnyTemplate[] = {
-    { SEC_ASN1_SET_OF, 0, SEC_AnyTemplate }
-};
-
-const SEC_ASN1Template SEC_BitStringTemplate[] = {
-    { SEC_ASN1_BIT_STRING | SEC_ASN1_MAY_STREAM, 0, NULL, sizeof(SECItem) }
-};
+#if 0
 
 const SEC_ASN1Template SEC_PointerToBitStringTemplate[] = {
     { SEC_ASN1_POINTER, 0, SEC_BitStringTemplate }
@@ -2788,10 +3177,6 @@ const SEC_ASN1Template SEC_SequenceOfBitStringTemplate[] = {
 
 const SEC_ASN1Template SEC_SetOfBitStringTemplate[] = {
     { SEC_ASN1_SET_OF, 0, SEC_BitStringTemplate }
-};
-
-const SEC_ASN1Template SEC_BMPStringTemplate[] = {
-    { SEC_ASN1_BMP_STRING | SEC_ASN1_MAY_STREAM, 0, NULL, sizeof(SECItem) }
 };
 
 const SEC_ASN1Template SEC_PointerToBMPStringTemplate[] = {
@@ -2806,10 +3191,6 @@ const SEC_ASN1Template SEC_SetOfBMPStringTemplate[] = {
     { SEC_ASN1_SET_OF, 0, SEC_BMPStringTemplate }
 };
 
-const SEC_ASN1Template SEC_BooleanTemplate[] = {
-    { SEC_ASN1_BOOLEAN, 0, NULL, sizeof(SECItem) }
-};
-
 const SEC_ASN1Template SEC_PointerToBooleanTemplate[] = {
     { SEC_ASN1_POINTER, 0, SEC_BooleanTemplate }
 };
@@ -2822,6 +3203,8 @@ const SEC_ASN1Template SEC_SetOfBooleanTemplate[] = {
     { SEC_ASN1_SET_OF, 0, SEC_BooleanTemplate }
 };
 
+#endif
+
 const SEC_ASN1Template SEC_EnumeratedTemplate[] = {
     { SEC_ASN1_ENUMERATED, 0, NULL, sizeof(SECItem) }
 };
@@ -2830,21 +3213,23 @@ const SEC_ASN1Template SEC_PointerToEnumeratedTemplate[] = {
     { SEC_ASN1_POINTER, 0, SEC_EnumeratedTemplate }
 };
 
+#if 0
+
 const SEC_ASN1Template SEC_SequenceOfEnumeratedTemplate[] = {
     { SEC_ASN1_SEQUENCE_OF, 0, SEC_EnumeratedTemplate }
 };
+
+#endif
 
 const SEC_ASN1Template SEC_SetOfEnumeratedTemplate[] = {
     { SEC_ASN1_SET_OF, 0, SEC_EnumeratedTemplate }
 };
 
-const SEC_ASN1Template SEC_GeneralizedTimeTemplate[] = {
-    { SEC_ASN1_GENERALIZED_TIME | SEC_ASN1_MAY_STREAM, 0, NULL, sizeof(SECItem)}
-};
-
 const SEC_ASN1Template SEC_PointerToGeneralizedTimeTemplate[] = {
     { SEC_ASN1_POINTER, 0, SEC_GeneralizedTimeTemplate }
 };
+
+#if 0
 
 const SEC_ASN1Template SEC_SequenceOfGeneralizedTimeTemplate[] = {
     { SEC_ASN1_SEQUENCE_OF, 0, SEC_GeneralizedTimeTemplate }
@@ -2852,10 +3237,6 @@ const SEC_ASN1Template SEC_SequenceOfGeneralizedTimeTemplate[] = {
 
 const SEC_ASN1Template SEC_SetOfGeneralizedTimeTemplate[] = {
     { SEC_ASN1_SET_OF, 0, SEC_GeneralizedTimeTemplate }
-};
-
-const SEC_ASN1Template SEC_IA5StringTemplate[] = {
-    { SEC_ASN1_IA5_STRING | SEC_ASN1_MAY_STREAM, 0, NULL, sizeof(SECItem) }
 };
 
 const SEC_ASN1Template SEC_PointerToIA5StringTemplate[] = {
@@ -2870,10 +3251,6 @@ const SEC_ASN1Template SEC_SetOfIA5StringTemplate[] = {
     { SEC_ASN1_SET_OF, 0, SEC_IA5StringTemplate }
 };
 
-const SEC_ASN1Template SEC_IntegerTemplate[] = {
-    { SEC_ASN1_INTEGER, 0, NULL, sizeof(SECItem) }
-};
-
 const SEC_ASN1Template SEC_PointerToIntegerTemplate[] = {
     { SEC_ASN1_POINTER, 0, SEC_IntegerTemplate }
 };
@@ -2884,10 +3261,6 @@ const SEC_ASN1Template SEC_SequenceOfIntegerTemplate[] = {
 
 const SEC_ASN1Template SEC_SetOfIntegerTemplate[] = {
     { SEC_ASN1_SET_OF, 0, SEC_IntegerTemplate }
-};
-
-const SEC_ASN1Template SEC_NullTemplate[] = {
-    { SEC_ASN1_NULL, 0, NULL, sizeof(SECItem) }
 };
 
 const SEC_ASN1Template SEC_PointerToNullTemplate[] = {
@@ -2902,28 +3275,20 @@ const SEC_ASN1Template SEC_SetOfNullTemplate[] = {
     { SEC_ASN1_SET_OF, 0, SEC_NullTemplate }
 };
 
-const SEC_ASN1Template SEC_ObjectIDTemplate[] = {
-    { SEC_ASN1_OBJECT_ID, 0, NULL, sizeof(SECItem) }
-};
-
 const SEC_ASN1Template SEC_PointerToObjectIDTemplate[] = {
     { SEC_ASN1_POINTER, 0, SEC_ObjectIDTemplate }
 };
+
+#endif
 
 const SEC_ASN1Template SEC_SequenceOfObjectIDTemplate[] = {
     { SEC_ASN1_SEQUENCE_OF, 0, SEC_ObjectIDTemplate }
 };
 
+#if 0
+
 const SEC_ASN1Template SEC_SetOfObjectIDTemplate[] = {
     { SEC_ASN1_SET_OF, 0, SEC_ObjectIDTemplate }
-};
-
-const SEC_ASN1Template SEC_OctetStringTemplate[] = {
-    { SEC_ASN1_OCTET_STRING | SEC_ASN1_MAY_STREAM, 0, NULL, sizeof(SECItem) }
-};
-
-const SEC_ASN1Template SEC_PointerToOctetStringTemplate[] = {
-    { SEC_ASN1_POINTER | SEC_ASN1_MAY_STREAM, 0, SEC_OctetStringTemplate }
 };
 
 const SEC_ASN1Template SEC_SequenceOfOctetStringTemplate[] = {
@@ -2934,9 +3299,13 @@ const SEC_ASN1Template SEC_SetOfOctetStringTemplate[] = {
     { SEC_ASN1_SET_OF, 0, SEC_OctetStringTemplate }
 };
 
+#endif
+
 const SEC_ASN1Template SEC_PrintableStringTemplate[] = {
     { SEC_ASN1_PRINTABLE_STRING | SEC_ASN1_MAY_STREAM, 0, NULL, sizeof(SECItem)}
 };
+
+#if 0
 
 const SEC_ASN1Template SEC_PointerToPrintableStringTemplate[] = {
     { SEC_ASN1_POINTER, 0, SEC_PrintableStringTemplate }
@@ -2950,9 +3319,13 @@ const SEC_ASN1Template SEC_SetOfPrintableStringTemplate[] = {
     { SEC_ASN1_SET_OF, 0, SEC_PrintableStringTemplate }
 };
 
+#endif
+
 const SEC_ASN1Template SEC_T61StringTemplate[] = {
     { SEC_ASN1_T61_STRING | SEC_ASN1_MAY_STREAM, 0, NULL, sizeof(SECItem) }
 };
+
+#if 0
 
 const SEC_ASN1Template SEC_PointerToT61StringTemplate[] = {
     { SEC_ASN1_POINTER, 0, SEC_T61StringTemplate }
@@ -2966,9 +3339,13 @@ const SEC_ASN1Template SEC_SetOfT61StringTemplate[] = {
     { SEC_ASN1_SET_OF, 0, SEC_T61StringTemplate }
 };
 
+#endif
+
 const SEC_ASN1Template SEC_UniversalStringTemplate[] = {
     { SEC_ASN1_UNIVERSAL_STRING | SEC_ASN1_MAY_STREAM, 0, NULL, sizeof(SECItem)}
 };
+
+#if 0
 
 const SEC_ASN1Template SEC_PointerToUniversalStringTemplate[] = {
     { SEC_ASN1_POINTER, 0, SEC_UniversalStringTemplate }
@@ -2980,10 +3357,6 @@ const SEC_ASN1Template SEC_SequenceOfUniversalStringTemplate[] = {
 
 const SEC_ASN1Template SEC_SetOfUniversalStringTemplate[] = {
     { SEC_ASN1_SET_OF, 0, SEC_UniversalStringTemplate }
-};
-
-const SEC_ASN1Template SEC_UTCTimeTemplate[] = {
-    { SEC_ASN1_UTC_TIME | SEC_ASN1_MAY_STREAM, 0, NULL, sizeof(SECItem) }
 };
 
 const SEC_ASN1Template SEC_PointerToUTCTimeTemplate[] = {
@@ -2998,10 +3371,6 @@ const SEC_ASN1Template SEC_SetOfUTCTimeTemplate[] = {
     { SEC_ASN1_SET_OF, 0, SEC_UTCTimeTemplate }
 };
 
-const SEC_ASN1Template SEC_UTF8StringTemplate[] = {
-    { SEC_ASN1_UTF8_STRING | SEC_ASN1_MAY_STREAM, 0, NULL, sizeof(SECItem)}
-};
-
 const SEC_ASN1Template SEC_PointerToUTF8StringTemplate[] = {
     { SEC_ASN1_POINTER, 0, SEC_UTF8StringTemplate }
 };
@@ -3014,9 +3383,13 @@ const SEC_ASN1Template SEC_SetOfUTF8StringTemplate[] = {
     { SEC_ASN1_SET_OF, 0, SEC_UTF8StringTemplate }
 };
 
+#endif
+
 const SEC_ASN1Template SEC_VisibleStringTemplate[] = {
     { SEC_ASN1_VISIBLE_STRING | SEC_ASN1_MAY_STREAM, 0, NULL, sizeof(SECItem) }
 };
+
+#if 0
 
 const SEC_ASN1Template SEC_PointerToVisibleStringTemplate[] = {
     { SEC_ASN1_POINTER, 0, SEC_VisibleStringTemplate }
@@ -3030,6 +3403,7 @@ const SEC_ASN1Template SEC_SetOfVisibleStringTemplate[] = {
     { SEC_ASN1_SET_OF, 0, SEC_VisibleStringTemplate }
 };
 
+#endif
 
 /*
  * Template for skipping a subitem.
@@ -3046,19 +3420,13 @@ const SEC_ASN1Template SEC_SkipTemplate[] = {
 /* These functions simply return the address of the above-declared templates.
 ** This is necessary for Windows DLLs.  Sigh.
 */
-SEC_ASN1_CHOOSER_IMPLEMENT(SEC_AnyTemplate)
-SEC_ASN1_CHOOSER_IMPLEMENT(SEC_BMPStringTemplate)
-SEC_ASN1_CHOOSER_IMPLEMENT(SEC_BooleanTemplate)
-SEC_ASN1_CHOOSER_IMPLEMENT(SEC_BitStringTemplate)
-SEC_ASN1_CHOOSER_IMPLEMENT(SEC_IA5StringTemplate)
-SEC_ASN1_CHOOSER_IMPLEMENT(SEC_GeneralizedTimeTemplate)
-SEC_ASN1_CHOOSER_IMPLEMENT(SEC_IntegerTemplate)
-SEC_ASN1_CHOOSER_IMPLEMENT(SEC_NullTemplate)
-SEC_ASN1_CHOOSER_IMPLEMENT(SEC_ObjectIDTemplate)
-SEC_ASN1_CHOOSER_IMPLEMENT(SEC_OctetStringTemplate)
-SEC_ASN1_CHOOSER_IMPLEMENT(SEC_PointerToAnyTemplate)
-SEC_ASN1_CHOOSER_IMPLEMENT(SEC_PointerToOctetStringTemplate)
-SEC_ASN1_CHOOSER_IMPLEMENT(SEC_SetOfAnyTemplate)
-SEC_ASN1_CHOOSER_IMPLEMENT(SEC_UTCTimeTemplate)
-SEC_ASN1_CHOOSER_IMPLEMENT(SEC_UTF8StringTemplate)
+SEC_ASN1_CHOOSER_IMPLEMENT(SEC_EnumeratedTemplate)
+SEC_ASN1_CHOOSER_IMPLEMENT(SEC_PointerToEnumeratedTemplate)
+SEC_ASN1_CHOOSER_IMPLEMENT(SEC_SequenceOfAnyTemplate)
+SEC_ASN1_CHOOSER_IMPLEMENT(SEC_SequenceOfObjectIDTemplate)
+SEC_ASN1_CHOOSER_IMPLEMENT(SEC_SkipTemplate)
+SEC_ASN1_CHOOSER_IMPLEMENT(SEC_UniversalStringTemplate)
+SEC_ASN1_CHOOSER_IMPLEMENT(SEC_PrintableStringTemplate)
+SEC_ASN1_CHOOSER_IMPLEMENT(SEC_T61StringTemplate)
+SEC_ASN1_CHOOSER_IMPLEMENT(SEC_PointerToGeneralizedTimeTemplate)
 

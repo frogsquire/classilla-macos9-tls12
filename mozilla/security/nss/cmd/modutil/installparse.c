@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 #ifndef lint
 char yysccsid[] = "@(#)yaccpar	1.4 (Berkeley) 02/25/90";
 #endif
@@ -199,7 +203,7 @@ yyparse()
     register char *yys;
     extern char *getenv();
 
-    if (yys = getenv("YYDEBUG"))
+    if ((yys = getenv("YYDEBUG")) != NULL)
     {
         yyn = *yys;
         if (yyn >= '0' && yyn <= '9')
@@ -216,7 +220,7 @@ yyparse()
     *yyssp = yystate = 0;
 
 yyloop:
-    if (yyn = yydefred[yystate]) goto yyreduce;
+    if ((yyn = yydefred[yystate]) != 0) goto yyreduce;
     if (yychar < 0)
     {
         if ((yychar = yylex()) < 0) yychar = 0;
@@ -258,13 +262,13 @@ yyloop:
     if (yyerrflag) goto yyinrecovery;
 #ifdef lint
     goto yynewerror;
-#endif
 yynewerror:
+#endif
     yyerror("syntax error");
 #ifdef lint
     goto yyerrlab;
-#endif
 yyerrlab:
+#endif
     ++yynerrs;
 yyinrecovery:
     if (yyerrflag < 3)
