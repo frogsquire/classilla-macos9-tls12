@@ -1,36 +1,7 @@
 /* -*- Mode: C; tab-width: 8 -*- */
-/*
- * The contents of this file are subject to the Mozilla Public
- * License Version 1.1 (the "License"); you may not use this file
- * except in compliance with the License. You may obtain a copy of
- * the License at http://www.mozilla.org/MPL/
- * 
- * Software distributed under the License is distributed on an "AS
- * IS" basis, WITHOUT WARRANTY OF ANY KIND, either express or
- * implied. See the License for the specific language governing
- * rights and limitations under the License.
- * 
- * The Original Code is the Netscape security libraries.
- * 
- * The Initial Developer of the Original Code is Netscape
- * Communications Corporation.  Portions created by Netscape are 
- * Copyright (C) 1994-2000 Netscape Communications Corporation.  All
- * Rights Reserved.
- * 
- * Contributor(s):
- * 
- * Alternatively, the contents of this file may be used under the
- * terms of the GNU General Public License Version 2 or later (the
- * "GPL"), in which case the provisions of the GPL are applicable 
- * instead of those above.  If you wish to allow use of your 
- * version of this file only under the terms of the GPL and not to
- * allow others to use your version of this file under the MPL,
- * indicate your decision by deleting the provisions above and
- * replace them with the notice and other provisions required by
- * the GPL.  If you do not delete the provisions above, a recipient
- * may use your version of this file under either the MPL or the
- * GPL.
- */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "crmf.h"
 #include "crmfi.h"
@@ -43,7 +14,7 @@ SEC_ASN1_MKSUB(SEC_NullTemplate)
 SEC_ASN1_MKSUB(SEC_BitStringTemplate)
 SEC_ASN1_MKSUB(SEC_IntegerTemplate)
 SEC_ASN1_MKSUB(SEC_OctetStringTemplate)
-SEC_ASN1_MKSUB(SEC_UTCTimeTemplate)
+SEC_ASN1_MKSUB(CERT_TimeChoiceTemplate)
 SEC_ASN1_MKSUB(CERT_SubjectPublicKeyInfoTemplate)
 SEC_ASN1_MKSUB(CERT_NameTemplate)
 
@@ -79,11 +50,11 @@ static const SEC_ASN1Template CRMFOptionalValidityTemplate[] = {
     { SEC_ASN1_EXPLICIT | SEC_ASN1_CONSTRUCTED | SEC_ASN1_NO_STREAM |
       SEC_ASN1_CONTEXT_SPECIFIC | SEC_ASN1_OPTIONAL | SEC_ASN1_XTRN | 0, 
       offsetof (CRMFOptionalValidity, notBefore),
-      SEC_ASN1_SUB(SEC_UTCTimeTemplate) },
+      SEC_ASN1_SUB(CERT_TimeChoiceTemplate) },
     { SEC_ASN1_EXPLICIT | SEC_ASN1_CONSTRUCTED | SEC_ASN1_NO_STREAM |
       SEC_ASN1_CONTEXT_SPECIFIC | SEC_ASN1_OPTIONAL | SEC_ASN1_XTRN | 1, 
       offsetof (CRMFOptionalValidity, notAfter),
-      SEC_ASN1_SUB(SEC_UTCTimeTemplate) },
+      SEC_ASN1_SUB(CERT_TimeChoiceTemplate) },
     { 0 }
 };
 
@@ -167,19 +138,6 @@ const SEC_ASN1Template CRMFCertReqMessagesTemplate[] = {
       CRMFCertReqMsgTemplate, sizeof (CRMFCertReqMessages)}
 };
 
-static const SEC_ASN1Template CRMFPOPOSigningKeyInputTemplate[] = {
-    { SEC_ASN1_SEQUENCE, 0, NULL,sizeof(CRMFPOPOSigningKeyInput) },
-    { SEC_ASN1_OPTIONAL | SEC_ASN1_CONSTRUCTED | 
-      SEC_ASN1_CONTEXT_SPECIFIC | 0,
-      offsetof(CRMFPOPOSigningKeyInput, authInfo.sender) },
-    { SEC_ASN1_BIT_STRING | SEC_ASN1_OPTIONAL | 1,
-      offsetof (CRMFPOPOSigningKeyInput, authInfo.publicKeyMAC) },
-    { SEC_ASN1_INLINE | SEC_ASN1_XTRN, 
-      offsetof(CRMFPOPOSigningKeyInput, publicKey), 
-      SEC_ASN1_SUB(CERT_SubjectPublicKeyInfoTemplate) },
-    { 0 }
-};
-
 const SEC_ASN1Template CRMFRAVerifiedTemplate[] = {
     { SEC_ASN1_CONTEXT_SPECIFIC | 0 | SEC_ASN1_XTRN, 
       0,
@@ -226,7 +184,7 @@ const SEC_ASN1Template CRMFSubsequentMessageTemplate[] = {
 };
 
 const SEC_ASN1Template CRMFDHMACTemplate[] = {
-    { SEC_ASN1_CONTEXT_SPECIFIC | SEC_ASN1_XTRN | 0,
+    { SEC_ASN1_CONTEXT_SPECIFIC | SEC_ASN1_XTRN | 2,
       0,
       SEC_ASN1_SUB(SEC_BitStringTemplate) },
     { 0 }
@@ -279,21 +237,5 @@ const SEC_ASN1Template CRMFEncryptedKeyWithEncryptedValueTemplate [] = {
       SEC_ASN1_CONTEXT_SPECIFIC | 0,
       0,
       CRMFEncryptedValueTemplate},
-    { 0 }
-};
-
-static const SEC_ASN1Template CRMFSinglePubInfoTemplate[] = {
-    { SEC_ASN1_SEQUENCE, 0, NULL, sizeof (CRMFSinglePubInfo)},
-    { SEC_ASN1_INTEGER, offsetof(CRMFSinglePubInfo, pubMethod) },
-    { SEC_ASN1_OPTIONAL | SEC_ASN1_CONSTRUCTED | SEC_ASN1_CONTEXT_SPECIFIC,
-      offsetof(CRMFSinglePubInfo, pubLocation) },
-    { 0 }
-};
-
-static const SEC_ASN1Template CRMFPublicationInfoTemplate[] ={ 
-    { SEC_ASN1_SEQUENCE, 0, NULL, sizeof(CRMFPKIPublicationInfo) },
-    { SEC_ASN1_INTEGER, offsetof(CRMFPKIPublicationInfo, action) },
-    { SEC_ASN1_POINTER, offsetof(CRMFPKIPublicationInfo, pubInfos),
-      CRMFSinglePubInfoTemplate},
     { 0 }
 };

@@ -3,44 +3,20 @@
  *
  *  Arbitrary precision integer arithmetic library
  *
- * The contents of this file are subject to the Mozilla Public
- * License Version 1.1 (the "License"); you may not use this file
- * except in compliance with the License. You may obtain a copy of
- * the License at http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS
- * IS" basis, WITHOUT WARRANTY OF ANY KIND, either express or
- * implied. See the License for the specific language governing
- * rights and limitations under the License.
- *
- * The Original Code is the MPI Arbitrary Precision Integer Arithmetic
- * library.
- *
- * The Initial Developer of the Original Code is Michael J. Fromberger.
- * Portions created by Michael J. Fromberger are 
- * Copyright (C) 1998, 1999, 2000 Michael J. Fromberger. 
- * All Rights Reserved.
- *
- * Contributor(s):
- *	Netscape Communications Corporation 
- *
- * Alternatively, the contents of this file may be used under the
- * terms of the GNU General Public License Version 2 or later (the
- * "GPL"), in which case the provisions of the GPL are applicable
- * instead of those above.  If you wish to allow use of your
- * version of this file only under the terms of the GPL and not to
- * allow others to use your version of this file under the MPL,
- * indicate your decision by deleting the provisions above and
- * replace them with the notice and other provisions required by
- * the GPL.  If you do not delete the provisions above, a recipient
- * may use your version of this file under either the MPL or the GPL.
- *
- *  $Id: mpi.c,v 1.39 2002/09/07 02:59:04 jpierre%netscape.com Exp $
- */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mpi-priv.h"
 #if defined(OSF1)
 #include <c_asm.h>
+#endif
+
+#if defined(__arm__) && \
+    ((defined(__thumb__) && !defined(__thumb2__)) || defined(__ARM_ARCH_3__))
+/* 16-bit thumb or ARM v3 doesn't work inlined assember version */
+#undef MP_ASSEMBLY_MULTIPLY
+#undef MP_ASSEMBLY_SQUARE
 #endif
 
 #if MP_LOGTAB
@@ -202,7 +178,6 @@ mp_err mp_copy(const mp_int *from, mp_int *to)
   if(from == to)
     return MP_OKAY;
 
-  ++mp_copies;
   { /* copy */
     mp_digit   *tmp;
 
@@ -840,6 +815,27 @@ mp_err   mp_mul(const mp_int *a, const mp_int *b, mp_int * c)
   if((res = s_mp_pad(c, USED(a) + USED(b))) != MP_OKAY)
     goto CLEANUP;
 
+#ifdef NSS_USE_COMBA
+  if ((MP_USED(a) == MP_USED(b)) && IS_POWER_OF_2(MP_USED(b))) {
+      if (MP_USED(a) == 4) {
+          s_mp_mul_comba_4(a, b, c);
+          goto CLEANUP;
+      }
+      if (MP_USED(a) == 8) {
+          s_mp_mul_comba_8(a, b, c);
+          goto CLEANUP;
+      }
+      if (MP_USED(a) == 16) {
+          s_mp_mul_comba_16(a, b, c);
+          goto CLEANUP;
+      }
+      if (MP_USED(a) == 32) {
+          s_mp_mul_comba_32(a, b, c);
+          goto CLEANUP;
+      } 
+  }
+#endif
+
   pb = MP_DIGITS(b);
   s_mpv_mul_d(MP_DIGITS(a), MP_USED(a), *pb++, MP_DIGITS(c));
 
@@ -910,6 +906,27 @@ mp_err   mp_sqr(const mp_int *a, mp_int *sqr)
   MP_USED(sqr) = ix;
   MP_DIGIT(sqr, 0) = 0;
 
+#ifdef NSS_USE_COMBA
+  if (IS_POWER_OF_2(MP_USED(a))) {
+      if (MP_USED(a) == 4) {
+          s_mp_sqr_comba_4(a, sqr);
+          goto CLEANUP;
+      }
+      if (MP_USED(a) == 8) {
+          s_mp_sqr_comba_8(a, sqr);
+          goto CLEANUP;
+      }
+      if (MP_USED(a) == 16) {
+          s_mp_sqr_comba_16(a, sqr);
+          goto CLEANUP;
+      }
+      if (MP_USED(a) == 32) {
+          s_mp_sqr_comba_32(a, sqr);
+          goto CLEANUP;
+      } 
+  }
+#endif
+
   pa = MP_DIGITS(a);
   count = MP_USED(a) - 1;
   if (count > 0) {
@@ -957,10 +974,13 @@ mp_err mp_div(const mp_int *a, const mp_int *b, mp_int *q, mp_int *r)
   mp_int   *pQ, *pR;
   mp_int   qtmp, rtmp, btmp;
   int      cmp;
-  mp_sign  signA = MP_SIGN(a);
-  mp_sign  signB = MP_SIGN(b);
+  mp_sign  signA;
+  mp_sign  signB;
 
   ARGCHK(a != NULL && b != NULL, MP_BADARG);
+  
+  signA = MP_SIGN(a);
+  signB = MP_SIGN(b);
 
   if(mp_cmp_z(b) == MP_EQ)
     return MP_RANGE;
@@ -1075,7 +1095,7 @@ mp_err mp_expt(mp_int *a, mp_int *b, mp_int *c)
   mp_int   s, x;
   mp_err   res;
   mp_digit d;
-  int      dig, bit;
+  unsigned int      dig, bit;
 
   ARGCHK(a != NULL && b != NULL && c != NULL, MP_BADARG);
 
@@ -1450,7 +1470,7 @@ mp_err s_mp_exptmod(const mp_int *a, const mp_int *b, const mp_int *m, mp_int *c
   mp_int   s, x, mu;
   mp_err   res;
   mp_digit d;
-  int      dig, bit;
+  unsigned int      dig, bit;
 
   ARGCHK(a != NULL && b != NULL && c != NULL, MP_BADARG);
 
@@ -1984,7 +2004,7 @@ mp_size mp_trailing_zeros(const mp_int *mp)
 {
   mp_digit d;
   mp_size  n = 0;
-  int      ix;
+  unsigned int      ix;
 
   if (!mp || !MP_DIGITS(mp) || !mp_cmp_z(mp))
     return n;
@@ -2084,7 +2104,10 @@ mp_err s_mp_almost_inverse(const mp_int *a, const mp_int *p, mp_int *c)
     }
   }
   if (res >= 0) {
-    while (MP_SIGN(c) != MP_ZPOS) {
+    if (mp_cmp_mag(c, (mp_int *)p) >= 0) {
+      MP_CHECKOK(mp_div(c, p, NULL, c));
+    }
+    if (MP_SIGN(c) != MP_ZPOS) {
       MP_CHECKOK( mp_add(c, p, c) );
     }
     res = k;
@@ -2768,7 +2791,7 @@ mp_err   s_mp_pad(mp_int *mp, mp_size min)
       if ((res = s_mp_grow(mp, min)) != MP_OKAY)
 	return res;
     } else {
-/*    s_mp_setz(DIGITS(mp) + USED(mp), min - USED(mp)); */
+      s_mp_setz(DIGITS(mp) + USED(mp), min - USED(mp));
     }
 
     /* Increase precision; should already be 0-filled */
@@ -2815,6 +2838,7 @@ void s_mp_copy(const mp_digit *sp, mp_digit *dp, mp_size count)
 #else
   memcpy(dp, sp, count * sizeof(mp_digit));
 #endif
+  ++mp_copies;
 
 } /* end s_mp_copy() */
 #endif
@@ -2890,15 +2914,12 @@ void     s_mp_exch(mp_int *a, mp_int *b)
    Shift mp leftward by p digits, growing if needed, and zero-filling
    the in-shifted digits at the right end.  This is a convenient
    alternative to multiplication by powers of the radix
-   The value of USED(mp) must already have been set to the value for
-   the shifted result.
  */   
 
 mp_err   s_mp_lshd(mp_int *mp, mp_size p)
 {
   mp_err  res;
-  mp_size pos;
-  int     ix;
+  unsigned int     ix;
 
   if(p == 0)
     return MP_OKAY;
@@ -2909,14 +2930,13 @@ mp_err   s_mp_lshd(mp_int *mp, mp_size p)
   if((res = s_mp_pad(mp, USED(mp) + p)) != MP_OKAY)
     return res;
 
-  pos = USED(mp) - 1;
-
   /* Shift all the significant figures over as needed */
-  for(ix = pos - p; ix >= 0; ix--) 
+  for (ix = USED(mp) - p; ix-- > 0;) {
     DIGIT(mp, ix + p) = DIGIT(mp, ix);
+  }
 
   /* Fill the bottom digits with zeroes */
-  for(ix = 0; ix < p; ix++)
+  for(ix = 0; (mp_size)ix < p; ix++)
     DIGIT(mp, ix) = 0;
 
   return MP_OKAY;
@@ -3027,7 +3047,7 @@ void     s_mp_div_2(mp_int *mp)
 mp_err s_mp_mul_2(mp_int *mp)
 {
   mp_digit *pd;
-  int      ix, used;
+  unsigned int ix, used;
   mp_digit kin = 0;
 
   /* Shift digits leftward by 1 bit */
@@ -4161,6 +4181,7 @@ mp_err   s_mp_div(mp_int *rem, 	/* i: dividend, o: remainder */
   if(mp_cmp_z(div) == 0)
     return MP_RANGE;
 
+  DIGITS(&t) = 0;
   /* Shortcut if divisor is power of two */
   if((ix = s_mp_ispow2(div)) >= 0) {
     MP_CHECKOK( mp_copy(rem, quot) );
@@ -4170,17 +4191,15 @@ mp_err   s_mp_div(mp_int *rem, 	/* i: dividend, o: remainder */
     return MP_OKAY;
   }
 
-  DIGITS(&t) = 0;
   MP_SIGN(rem) = ZPOS;
   MP_SIGN(div) = ZPOS;
+  MP_SIGN(&part) = ZPOS;
 
   /* A working temporary for division     */
   MP_CHECKOK( mp_init_size(&t, MP_ALLOC(rem)));
 
   /* Normalize to optimize guessing       */
   MP_CHECKOK( s_mp_norm(rem, div, &d) );
-
-  part = *rem;
 
   /* Perform the division itself...woo!   */
   MP_USED(quot) = MP_ALLOC(quot);
@@ -4190,11 +4209,15 @@ mp_err   s_mp_div(mp_int *rem, 	/* i: dividend, o: remainder */
   while (MP_USED(rem) > MP_USED(div) || s_mp_cmp(rem, div) >= 0) {
     int i;
     int unusedRem;
+    int partExtended = 0;  /* set to true if we need to extend part */
 
     unusedRem = MP_USED(rem) - MP_USED(div);
     MP_DIGITS(&part) = MP_DIGITS(rem) + unusedRem;
     MP_ALLOC(&part)  = MP_ALLOC(rem)  - unusedRem;
     MP_USED(&part)   = MP_USED(div);
+
+    /* We have now truncated the part of the remainder to the same length as
+     * the divisor. If part is smaller than div, extend part by one digit. */
     if (s_mp_cmp(&part, div) < 0) {
       -- unusedRem;
 #if MP_ARGCHK == 2
@@ -4203,26 +4226,34 @@ mp_err   s_mp_div(mp_int *rem, 	/* i: dividend, o: remainder */
       -- MP_DIGITS(&part);
       ++ MP_USED(&part);
       ++ MP_ALLOC(&part);
+      partExtended = 1;
     }
 
     /* Compute a guess for the next quotient digit       */
     q_msd = MP_DIGIT(&part, MP_USED(&part) - 1);
     div_msd = MP_DIGIT(div, MP_USED(div) - 1);
-    if (q_msd >= div_msd) {
+    if (!partExtended) {
+      /* In this case, q_msd /= div_msd is always 1. First, since div_msd is
+       * normalized to have the high bit set, 2*div_msd > MP_DIGIT_MAX. Since
+       * we didn't extend part, q_msd >= div_msd. Therefore we know that
+       * div_msd <= q_msd <= MP_DIGIT_MAX < 2*div_msd. Dividing by div_msd we
+       * get 1 <= q_msd/div_msd < 2. So q_msd /= div_msd must be 1. */
       q_msd = 1;
-    } else if (MP_USED(&part) > 1) {
+    } else {
 #if !defined(MP_NO_MP_WORD) && !defined(MP_NO_DIV_WORD)
       q_msd = (q_msd << MP_DIGIT_BIT) | MP_DIGIT(&part, MP_USED(&part) - 2);
       q_msd /= div_msd;
       if (q_msd == RADIX)
         --q_msd;
 #else
-      mp_digit r;
-      MP_CHECKOK( s_mpv_div_2dx1d(q_msd, MP_DIGIT(&part, MP_USED(&part) - 2), 
-				  div_msd, &q_msd, &r) );
+      if (q_msd == div_msd) {
+        q_msd = MP_DIGIT_MAX;
+      } else {
+        mp_digit r;
+        MP_CHECKOK( s_mpv_div_2dx1d(q_msd, MP_DIGIT(&part, MP_USED(&part) - 2),
+				    div_msd, &q_msd, &r) );
+      }
 #endif
-    } else {
-      q_msd = 0;
     }
 #if MP_ARGCHK == 2
     assert(q_msd > 0); /* This case should never occur any more. */
@@ -4653,10 +4684,10 @@ mp_read_unsigned_octets(mp_int *mp, const unsigned char *str, mp_size len)
 /* }}} */
 
 /* {{{ mp_unsigned_octet_size(mp) */
-int    
+unsigned int
 mp_unsigned_octet_size(const mp_int *mp)
 {
-  int  bytes;
+  unsigned int bytes;
   int  ix;
   mp_digit  d = 0;
 
@@ -4693,7 +4724,7 @@ mp_err
 mp_to_unsigned_octets(const mp_int *mp, unsigned char *str, mp_size maxlen)
 {
   int  ix, pos = 0;
-  int  bytes;
+  unsigned int  bytes;
 
   ARGCHK(mp != NULL && str != NULL && !SIGN(mp), MP_BADARG);
 
@@ -4713,6 +4744,8 @@ mp_to_unsigned_octets(const mp_int *mp, unsigned char *str, mp_size maxlen)
       str[pos++] = x;
     }
   }
+  if (!pos)
+    str[pos++] = 0;
   return pos;
 } /* end mp_to_unsigned_octets() */
 /* }}} */
@@ -4723,7 +4756,7 @@ mp_err
 mp_to_signed_octets(const mp_int *mp, unsigned char *str, mp_size maxlen)
 {
   int  ix, pos = 0;
-  int  bytes;
+  unsigned int  bytes;
 
   ARGCHK(mp != NULL && str != NULL && !SIGN(mp), MP_BADARG);
 
@@ -4751,39 +4784,66 @@ mp_to_signed_octets(const mp_int *mp, unsigned char *str, mp_size maxlen)
       str[pos++] = x;
     }
   }
+  if (!pos)
+    str[pos++] = 0;
   return pos;
 } /* end mp_to_signed_octets() */
 /* }}} */
 
 /* {{{ mp_to_fixlen_octets(mp, str) */
-/* output a buffer of big endian octets exactly as long as requested. */
+/* output a buffer of big endian octets exactly as long as requested.
+   constant time on the value of mp. */
 mp_err 
 mp_to_fixlen_octets(const mp_int *mp, unsigned char *str, mp_size length)
 {
-  int  ix, pos = 0;
-  int  bytes;
+  int ix, jx;
+  unsigned int bytes;
 
-  ARGCHK(mp != NULL && str != NULL && !SIGN(mp), MP_BADARG);
+  ARGCHK(mp != NULL, MP_BADARG);
+  ARGCHK(str != NULL, MP_BADARG);
+  ARGCHK(!SIGN(mp), MP_BADARG);
+  ARGCHK(length > 0, MP_BADARG);
 
-  bytes = mp_unsigned_octet_size(mp);
-  ARGCHK(bytes <= length, MP_BADARG);
+  /* Constant time on the value of mp.  Don't use mp_unsigned_octet_size. */
+  bytes = USED(mp) * MP_DIGIT_SIZE;
 
-  /* place any needed leading zeros */
-  for (;length > bytes; --length) {
-	*str++ = 0;
+  /* If the output is shorter than the native size of mp, then check that any
+   * bytes not written have zero values.  This check isn't constant time on
+   * the assumption that timing-sensitive callers can guarantee that mp fits
+   * in the allocated space. */
+  ix = USED(mp) - 1;
+  if (bytes > length) {
+      unsigned int zeros = bytes - length;
+
+      while (zeros >= MP_DIGIT_SIZE) {
+          ARGCHK(DIGIT(mp, ix) == 0, MP_BADARG);
+          zeros -= MP_DIGIT_SIZE;
+          ix--;
+      }
+
+      if (zeros > 0) {
+          mp_digit d = DIGIT(mp, ix);
+          mp_digit m = (mp_digit)~0 << ((MP_DIGIT_SIZE - zeros) * CHAR_BIT);
+          ARGCHK((d & m) == 0, MP_BADARG);
+          for (jx = MP_DIGIT_SIZE - zeros - 1; jx >= 0; jx--) {
+              *str++ = d >> (jx * CHAR_BIT);
+          }
+          ix--;
+      }
+  } else if (bytes < length) {
+      /* Place any needed leading zeros. */
+      unsigned int zeros = length - bytes;
+      memset(str, 0, zeros);
+      str += zeros;
   }
 
-  /* Iterate over each digit... */
-  for(ix = USED(mp) - 1; ix >= 0; ix--) {
-    mp_digit  d = DIGIT(mp, ix);
-    int       jx;
+  /* Iterate over each whole digit... */
+  for (; ix >= 0; ix--) {
+    mp_digit d = DIGIT(mp, ix);
 
     /* Unpack digit bytes, high order first */
-    for(jx = sizeof(mp_digit) - 1; jx >= 0; jx--) {
-      unsigned char x = (unsigned char)(d >> (jx * CHAR_BIT));
-      if (!pos && !x)	/* suppress leading zeros */
-	continue;
-      str[pos++] = x;
+    for (jx = MP_DIGIT_SIZE - 1; jx >= 0; jx--) {
+      *str++ = d >> (jx * CHAR_BIT);
     }
   }
   return MP_OKAY;

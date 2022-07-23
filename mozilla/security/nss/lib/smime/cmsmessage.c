@@ -1,40 +1,9 @@
-/*
- * The contents of this file are subject to the Mozilla Public
- * License Version 1.1 (the "License"); you may not use this file
- * except in compliance with the License. You may obtain a copy of
- * the License at http://www.mozilla.org/MPL/
- * 
- * Software distributed under the License is distributed on an "AS
- * IS" basis, WITHOUT WARRANTY OF ANY KIND, either express or
- * implied. See the License for the specific language governing
- * rights and limitations under the License.
- * 
- * The Original Code is the Netscape security libraries.
- * 
- * The Initial Developer of the Original Code is Netscape
- * Communications Corporation.  Portions created by Netscape are 
- * Copyright (C) 1994-2000 Netscape Communications Corporation.  All
- * Rights Reserved.
- * 
- * Contributor(s):
- * 
- * Alternatively, the contents of this file may be used under the
- * terms of the GNU General Public License Version 2 or later (the
- * "GPL"), in which case the provisions of the GPL are applicable 
- * instead of those above.  If you wish to allow use of your 
- * version of this file only under the terms of the GPL and not to
- * allow others to use your version of this file under the MPL,
- * indicate your decision by deleting the provisions above and
- * replace them with the notice and other provisions required by
- * the GPL.  If you do not delete the provisions above, a recipient
- * may use your version of this file under either the MPL or the
- * GPL.
- */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /*
  * CMS message methods.
- *
- * $Id: cmsmessage.c,v 1.3 2001/09/20 22:15:32 relyea%netscape.com Exp $
  */
 
 #include "cmslocal.h"
@@ -59,24 +28,25 @@ NSS_CMSMessage_Create(PLArenaPool *poolp)
     PRBool poolp_is_ours = PR_FALSE;
 
     if (poolp == NULL) {
-	poolp = PORT_NewArena (1024);           /* XXX what is right value? */
-	if (poolp == NULL)
-	    return NULL;
-	poolp_is_ours = PR_TRUE;
-    } 
+        poolp = PORT_NewArena (1024);           /* XXX what is right value? */
+        if (poolp == NULL)
+            return NULL;
+        poolp_is_ours = PR_TRUE;
+    }
 
     if (!poolp_is_ours)
-	mark = PORT_ArenaMark(poolp);
+        mark = PORT_ArenaMark(poolp);
 
-    cmsg = (NSSCMSMessage *)PORT_ArenaZAlloc (poolp, sizeof(NSSCMSMessage));
-    if (cmsg == NULL) {
-	if (!poolp_is_ours) {
-	    if (mark) {
-		PORT_ArenaRelease(poolp, mark);
-	    }
-	} else
-	    PORT_FreeArena(poolp, PR_FALSE);
-	return NULL;
+    cmsg = (NSSCMSMessage *)PORT_ArenaZAlloc(poolp, sizeof(NSSCMSMessage));
+    if (cmsg == NULL ||
+        NSS_CMSContentInfo_Private_Init(&(cmsg->contentInfo)) != SECSuccess) {
+        if (!poolp_is_ours) {
+            if (mark) {
+                PORT_ArenaRelease(poolp, mark);
+            }
+        } else
+            PORT_FreeArena(poolp, PR_FALSE);
+        return NULL;
     }
 
     cmsg->poolp = poolp;
@@ -103,6 +73,10 @@ NSS_CMSMessage_SetEncodingParams(NSSCMSMessage *cmsg,
 			NSSCMSGetDecryptKeyCallback decrypt_key_cb, void *decrypt_key_cb_arg,
 			SECAlgorithmID **detached_digestalgs, SECItem **detached_digests)
 {
+    if (cmsg == NULL) {
+        return;
+    }
+
     if (pwfn)
 	PK11_SetPasswordFunc(pwfn);
     cmsg->pwfn_arg = pwfn_arg;
@@ -118,6 +92,9 @@ NSS_CMSMessage_SetEncodingParams(NSSCMSMessage *cmsg,
 void
 NSS_CMSMessage_Destroy(NSSCMSMessage *cmsg)
 {
+    if (cmsg == NULL)
+        return;
+
     PORT_Assert (cmsg->refCount > 0);
     if (cmsg->refCount <= 0)	/* oops */
 	return;
@@ -157,6 +134,10 @@ NSS_CMSMessage_Copy(NSSCMSMessage *cmsg)
 PLArenaPool *
 NSS_CMSMessage_GetArena(NSSCMSMessage *cmsg)
 {
+    if (cmsg == NULL) {
+        return NULL;
+    }
+
     return cmsg->poolp;
 }
 
@@ -166,6 +147,10 @@ NSS_CMSMessage_GetArena(NSSCMSMessage *cmsg)
 NSSCMSContentInfo *
 NSS_CMSMessage_GetContentInfo(NSSCMSMessage *cmsg)
 {
+    if (cmsg == NULL) {
+        return NULL;
+    }
+
     return &(cmsg->contentInfo);
 }
 
@@ -177,8 +162,17 @@ NSS_CMSMessage_GetContentInfo(NSSCMSMessage *cmsg)
 SECItem *
 NSS_CMSMessage_GetContent(NSSCMSMessage *cmsg)
 {
+    NSSCMSContentInfo *cinfo;
+    SECItem           *pItem;
+
+    if (cmsg == NULL) {
+        return NULL;
+    }
+
     /* this is a shortcut */
-    return NSS_CMSContentInfo_GetInnerContent(NSS_CMSMessage_GetContentInfo(cmsg));
+    cinfo = NSS_CMSMessage_GetContentInfo(cmsg);
+    pItem = NSS_CMSContentInfo_GetInnerContent(cinfo);
+    return pItem;
 }
 
 /*
@@ -192,9 +186,14 @@ NSS_CMSMessage_ContentLevelCount(NSSCMSMessage *cmsg)
     int count = 0;
     NSSCMSContentInfo *cinfo;
 
+    if (cmsg == NULL) {
+        return 0;
+    }
+
     /* walk down the chain of contentinfos */
-    for (cinfo = &(cmsg->contentInfo); cinfo != NULL; cinfo = NSS_CMSContentInfo_GetChildContentInfo(cinfo)) {
+    for (cinfo = &(cmsg->contentInfo); cinfo != NULL; ) {
 	count++;
+	cinfo = NSS_CMSContentInfo_GetChildContentInfo(cinfo);
     }
     return count;
 }
@@ -209,6 +208,10 @@ NSS_CMSMessage_ContentLevel(NSSCMSMessage *cmsg, int n)
 {
     int count = 0;
     NSSCMSContentInfo *cinfo;
+
+    if (cmsg == NULL) {
+        return NULL;
+    }
 
     /* walk down the chain of contentinfos */
     for (cinfo = &(cmsg->contentInfo); cinfo != NULL && count < n; cinfo = NSS_CMSContentInfo_GetChildContentInfo(cinfo)) {
@@ -226,13 +229,18 @@ NSS_CMSMessage_ContainsCertsOrCrls(NSSCMSMessage *cmsg)
 {
     NSSCMSContentInfo *cinfo;
 
+    if (cmsg == NULL) {
+        return PR_FALSE;
+    }
+
     /* descend into CMS message */
     for (cinfo = &(cmsg->contentInfo); cinfo != NULL; cinfo = NSS_CMSContentInfo_GetChildContentInfo(cinfo)) {
-	if (NSS_CMSContentInfo_GetContentTypeTag(cinfo) != SEC_OID_PKCS7_SIGNED_DATA)
+	if (!NSS_CMSType_IsData(NSS_CMSContentInfo_GetContentTypeTag(cinfo)))
 	    continue;	/* next level */
 	
 	if (NSS_CMSSignedData_ContainsCertsOrCrls(cinfo->content.signedData))
 	    return PR_TRUE;
+	/* callback here for generic wrappers? */
     }
     return PR_FALSE;
 }
@@ -245,6 +253,10 @@ NSS_CMSMessage_IsEncrypted(NSSCMSMessage *cmsg)
 {
     NSSCMSContentInfo *cinfo;
 
+    if (cmsg == NULL) {
+        return PR_FALSE;
+    }
+
     /* walk down the chain of contentinfos */
     for (cinfo = &(cmsg->contentInfo); cinfo != NULL; cinfo = NSS_CMSContentInfo_GetChildContentInfo(cinfo))
     {
@@ -253,6 +265,7 @@ NSS_CMSMessage_IsEncrypted(NSSCMSMessage *cmsg)
 	case SEC_OID_PKCS7_ENCRYPTED_DATA:
 	    return PR_TRUE;
 	default:
+	    /* callback here for generic wrappers? */
 	    break;
 	}
     }
@@ -274,15 +287,23 @@ NSS_CMSMessage_IsSigned(NSSCMSMessage *cmsg)
 {
     NSSCMSContentInfo *cinfo;
 
+    if (cmsg == NULL) {
+        return PR_FALSE;
+    }
+
     /* walk down the chain of contentinfos */
     for (cinfo = &(cmsg->contentInfo); cinfo != NULL; cinfo = NSS_CMSContentInfo_GetChildContentInfo(cinfo))
     {
 	switch (NSS_CMSContentInfo_GetContentTypeTag(cinfo)) {
 	case SEC_OID_PKCS7_SIGNED_DATA:
+            if (cinfo->content.signedData == NULL) {
+                return PR_FALSE;
+            }
 	    if (!NSS_CMSArray_IsEmpty((void **)cinfo->content.signedData->signerInfos))
 		return PR_TRUE;
 	    break;
 	default:
+	    /* callback here for generic wrappers? */
 	    break;
 	}
     }

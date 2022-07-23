@@ -1,39 +1,6 @@
-/* 
- * The contents of this file are subject to the Mozilla Public
- * License Version 1.1 (the "License"); you may not use this file
- * except in compliance with the License. You may obtain a copy of
- * the License at http://www.mozilla.org/MPL/
- * 
- * Software distributed under the License is distributed on an "AS
- * IS" basis, WITHOUT WARRANTY OF ANY KIND, either express or
- * implied. See the License for the specific language governing
- * rights and limitations under the License.
- * 
- * The Original Code is the Netscape security libraries.
- * 
- * The Initial Developer of the Original Code is Netscape
- * Communications Corporation.  Portions created by Netscape are 
- * Copyright (C) 1994-2000 Netscape Communications Corporation.  All
- * Rights Reserved.
- * 
- * Contributor(s):
- * 
- * Alternatively, the contents of this file may be used under the
- * terms of the GNU General Public License Version 2 or later (the
- * "GPL"), in which case the provisions of the GPL are applicable 
- * instead of those above.  If you wish to allow use of your 
- * version of this file only under the terms of the GPL and not to
- * allow others to use your version of this file under the MPL,
- * indicate your decision by deleting the provisions above and
- * replace them with the notice and other provisions required by
- * the GPL.  If you do not delete the provisions above, a recipient
- * may use your version of this file under either the MPL or the
- * GPL.
- */
-
-#ifdef DEBUG
-static const char CVS_ID[] = "@(#) $RCSfile: tdcache.c,v $ $Revision: 1.34.2.2 $ $Date: 2003/07/10 01:27:28 $ $Name:  $";
-#endif /* DEBUG */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef PKIM_H
 #include "pkim.h"
@@ -59,11 +26,9 @@ static const char CVS_ID[] = "@(#) $RCSfile: tdcache.c,v $ $Revision: 1.34.2.2 $
 #include "base.h"
 #endif /* BASE_H */
 
-#ifdef NSS_3_4_CODE
 #include "cert.h"
 #include "dev.h"
 #include "pki3hack.h"
-#endif
 
 #ifdef DEBUG_CACHE
 static PRLogModuleInfo *s_log = NULL;
@@ -145,20 +110,6 @@ new_cache_entry(NSSArena *arena, void *value, PRBool ownArena)
 	ce->nickname = NULL;
     }
     return ce;
-}
-
-/* sort the subject list from newest to oldest */
-static PRIntn subject_list_sort(void *v1, void *v2)
-{
-    NSSCertificate *c1 = (NSSCertificate *)v1;
-    NSSCertificate *c2 = (NSSCertificate *)v2;
-    nssDecodedCert *dc1 = nssCertificate_GetDecoding(c1);
-    nssDecodedCert *dc2 = nssCertificate_GetDecoding(c2);
-    if (dc1->isNewerThan(dc1, dc2)) {
-	return -1;
-    } else {
-	return 1;
-    }
 }
 
 /* this should not be exposed in a header, but is here to keep the above
@@ -378,7 +329,7 @@ nssTrustDomain_RemoveCertFromCacheLOCKED (
     nssList *subjectList;
     cache_entry *ce;
     NSSArena *arena;
-    NSSUTF8 *nickname;
+    NSSUTF8 *nickname = NULL;
 
 #ifdef DEBUG_CACHE
     log_cert_ref("attempt to remove cert", cert);
@@ -440,7 +391,8 @@ remove_token_certs(const void *k, void *v, void *a)
     nssPKIObject *object = &c->object;
     struct token_cert_dtor *dtor = a;
     PRUint32 i;
-    PZ_Lock(object->lock);
+    nssPKIObject_AddRef(object);
+    nssPKIObject_Lock(object);
     for (i=0; i<object->numInstances; i++) {
 	if (object->instances[i]->token == dtor->token) {
 	    nssCryptokiObject_Destroy(object->instances[i]);
@@ -457,7 +409,8 @@ remove_token_certs(const void *k, void *v, void *a)
 	    break;
 	}
     }
-    PZ_Unlock(object->lock);
+    nssPKIObject_Unlock(object);
+    nssPKIObject_Destroy(object);
     return;
 }
 
@@ -484,17 +437,21 @@ nssTrustDomain_RemoveTokenCertsFromCache (
     dtor.numCerts = 0;
     dtor.arrSize = arrSize;
     PZ_Lock(td->cache->lock);
-    nssHash_Iterate(td->cache->issuerAndSN, remove_token_certs, (void *)&dtor);
+    nssHash_Iterate(td->cache->issuerAndSN, remove_token_certs, &dtor);
     for (i=0; i<dtor.numCerts; i++) {
 	if (dtor.certs[i]->object.numInstances == 0) {
 	    nssTrustDomain_RemoveCertFromCacheLOCKED(td, dtor.certs[i]);
 	    dtor.certs[i] = NULL;  /* skip this cert in the second for loop */
+	} else {
+	    /* make sure it doesn't disappear on us before we finish */
+	    nssCertificate_AddRef(dtor.certs[i]);
 	}
     }
     PZ_Unlock(td->cache->lock);
     for (i=0; i<dtor.numCerts; i++) {
 	if (dtor.certs[i]) {
 	    STAN_ForceCERTCertificateUpdate(dtor.certs[i]);
+	    nssCertificate_Destroy(dtor.certs[i]);
 	}
     }
     nss_ZFreeIf(dtor.certs);
@@ -512,15 +469,15 @@ nssTrustDomain_UpdateCachedTokenCerts (
     PRUint32 count;
     certList = nssList_Create(NULL, PR_FALSE);
     if (!certList) return PR_FAILURE;
-    (void *)nssTrustDomain_GetCertsFromCache(td, certList);
+    (void)nssTrustDomain_GetCertsFromCache(td, certList);
     count = nssList_Count(certList);
     if (count > 0) {
 	cached = nss_ZNEWARRAY(NULL, NSSCertificate *, count + 1);
 	if (!cached) {
+	    nssList_Destroy(certList);
 	    return PR_FAILURE;
 	}
 	nssList_GetArray(certList, (void **)cached, count);
-	nssList_Destroy(certList);
 	for (cp = cached; *cp; cp++) {
 	    nssCryptokiObject *instance;
 	    NSSCertificate *c = *cp;
@@ -539,6 +496,7 @@ nssTrustDomain_UpdateCachedTokenCerts (
 	}
 	nssCertificateArray_Destroy(cached);
     }
+    nssList_Destroy(certList);
     return PR_SUCCESS;
 }
 
@@ -593,7 +551,7 @@ add_subject_entry (
 	if (nickname) {
 	    ce->nickname = nssUTF8_Duplicate(nickname, arena);
 	}
-	nssList_SetSortFunction(list, subject_list_sort);
+	nssList_SetSortFunction(list, nssCertificate_SubjectListSort);
 	/* Add the cert entry to this list of subjects */
 	nssrv = nssList_AddUnique(list, cert);
 	if (nssrv != PR_SUCCESS) {
@@ -715,6 +673,50 @@ add_email_entry (
 
 extern const NSSError NSS_ERROR_CERTIFICATE_IN_CACHE;
 
+static void
+remove_object_instances (
+  nssPKIObject *object,
+  nssCryptokiObject **instances,
+  int numInstances
+)
+{
+    int i;
+
+    for (i = 0; i < numInstances; i++) {
+	nssPKIObject_RemoveInstanceForToken(object, instances[i]->token);
+    }
+}
+
+static SECStatus
+merge_object_instances (
+  nssPKIObject *to,
+  nssPKIObject *from
+)
+{
+    nssCryptokiObject **instances, **ci;
+    int i;
+    SECStatus rv = SECSuccess;
+
+    instances = nssPKIObject_GetInstances(from);
+    if (instances == NULL) {
+	return SECFailure;
+    }
+    for (ci = instances, i = 0; *ci; ci++, i++) {
+	nssCryptokiObject *instance = nssCryptokiObject_Clone(*ci);
+	if (instance) {
+	    if (nssPKIObject_AddInstance(to, instance) == PR_SUCCESS) {
+		continue;
+	    }
+	    nssCryptokiObject_Destroy(instance);
+	}
+	remove_object_instances(to, instances, i);
+	rv = SECFailure;
+	break;
+    }
+    nssCryptokiObjectArray_Destroy(instances);
+    return rv;
+}
+
 static NSSCertificate *
 add_cert_to_cache (
   NSSTrustDomain *td, 
@@ -740,9 +742,17 @@ add_cert_to_cache (
 	log_cert_ref("attempted to add cert already in cache", cert);
 #endif
 	PZ_Unlock(td->cache->lock);
+        nss_ZFreeIf(certNickname);
 	/* collision - somebody else already added the cert
 	 * to the cache before this thread got around to it.
 	 */
+	/* merge the instances of the cert */
+	if (merge_object_instances(&rvCert->object, &cert->object)
+							!= SECSuccess) {
+	    nssCertificate_Destroy(rvCert);
+	    return NULL;
+	}
+	STAN_ForceCERTCertificateUpdate(rvCert);
 	nssCertificate_Destroy(cert);
 	return rvCert;
     }
@@ -766,14 +776,18 @@ add_cert_to_cache (
     added++;
     /* If a new subject entry was created, also need nickname and/or email */
     if (subjectList != NULL) {
+#ifdef nodef
 	PRBool handle = PR_FALSE;
+#endif
 	if (certNickname) {
 	    nssrv = add_nickname_entry(arena, td->cache, 
 						certNickname, subjectList);
 	    if (nssrv != PR_SUCCESS) {
 		goto loser;
 	    }
+#ifdef nodef
 	    handle = PR_TRUE;
+#endif
 	    added++;
 	}
 	if (cert->email) {
@@ -781,7 +795,9 @@ add_cert_to_cache (
 	    if (nssrv != PR_SUCCESS) {
 		goto loser;
 	    }
+#ifdef nodef
 	    handle = PR_TRUE;
+#endif
 	    added += 2;
 	}
 #ifdef nodef
@@ -795,11 +811,17 @@ add_cert_to_cache (
 	    goto loser;
 	}
 #endif
+    } else {
+    	/* A new subject entry was not created.  arena is unused. */
+	nssArena_Destroy(arena);
     }
     rvCert = cert;
     PZ_Unlock(td->cache->lock);
+    nss_ZFreeIf(certNickname);
     return rvCert;
 loser:
+    nss_ZFreeIf(certNickname);
+    certNickname = NULL;
     /* Remove any handles that have been created */
     subjectList = NULL;
     if (added >= 1) {
@@ -858,6 +880,9 @@ collect_subject_certs (
     nssCertificateList_AddReferences(subjectList);
     if (rvCertListOpt) {
 	nssListIterator *iter = nssList_CreateIterator(subjectList);
+	if (!iter) {
+	    return (NSSCertificate **)NULL;
+	}
 	for (c  = (NSSCertificate *)nssListIterator_Start(iter);
 	     c != (NSSCertificate *)NULL;
 	     c  = (NSSCertificate *)nssListIterator_Next(iter)) {
@@ -911,7 +936,7 @@ nssTrustDomain_GetCertsForSubjectFromCache (
 NSS_IMPLEMENT NSSCertificate **
 nssTrustDomain_GetCertsForNicknameFromCache (
   NSSTrustDomain *td,
-  NSSUTF8 *nickname,
+  const NSSUTF8 *nickname,
   nssList *certListOpt
 )
 {
@@ -1033,34 +1058,6 @@ nssTrustDomain_GetCertForIssuerAndSNFromCache (
     return rvCert;
 }
 
-#ifdef NSS_3_4_CODE
-static PRStatus
-issuer_and_serial_from_encoding (
-  NSSBER *encoding, 
-  NSSDER *issuer, 
-  NSSDER *serial
-)
-{
-    SECItem derCert, derIssuer, derSerial;
-    SECStatus secrv;
-    derCert.data = (unsigned char *)encoding->data;
-    derCert.len = encoding->size;
-    secrv = CERT_IssuerNameFromDERCert(&derCert, &derIssuer);
-    if (secrv != SECSuccess) {
-	return PR_FAILURE;
-    }
-    secrv = CERT_SerialNumberFromDERCert(&derCert, &derSerial);
-    if (secrv != SECSuccess) {
-	return PR_FAILURE;
-    }
-    issuer->data = derIssuer.data;
-    issuer->size = derIssuer.len;
-    serial->data = derSerial.data;
-    serial->size = derSerial.len;
-    return PR_SUCCESS;
-}
-#endif
-
 /*
  * Look for a specific cert in the cache
  */
@@ -1073,9 +1070,7 @@ nssTrustDomain_GetCertByDERFromCache (
     PRStatus nssrv = PR_FAILURE;
     NSSDER issuer, serial;
     NSSCertificate *rvCert;
-#ifdef NSS_3_4_CODE
-    nssrv = issuer_and_serial_from_encoding(der, &issuer, &serial);
-#endif
+    nssrv = nssPKIX509_GetIssuerAndSerialFromDER(der, &issuer, &serial);
     if (nssrv != PR_SUCCESS) {
 	return NULL;
     }
@@ -1084,10 +1079,8 @@ nssTrustDomain_GetCertByDERFromCache (
 #endif
     rvCert = nssTrustDomain_GetCertForIssuerAndSNFromCache(td, 
                                                            &issuer, &serial);
-#ifdef NSS_3_4_CODE
     PORT_Free(issuer.data);
     PORT_Free(serial.data);
-#endif
     return rvCert;
 }
 
@@ -1110,6 +1103,9 @@ nssTrustDomain_GetCertsFromCache (
 	certList = certListOpt;
     } else {
 	certList = nssList_Create(NULL, PR_FALSE);
+	if (!certList) {
+	    return NULL;
+	}
     }
     PZ_Lock(td->cache->lock);
     nssHash_Iterate(td->cache->issuerAndSN, cert_iter, (void *)certList);

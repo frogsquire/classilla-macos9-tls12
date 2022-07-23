@@ -1,40 +1,9 @@
-/*
- * The contents of this file are subject to the Mozilla Public
- * License Version 1.1 (the "License"); you may not use this file
- * except in compliance with the License. You may obtain a copy of
- * the License at http://www.mozilla.org/MPL/
- * 
- * Software distributed under the License is distributed on an "AS
- * IS" basis, WITHOUT WARRANTY OF ANY KIND, either express or
- * implied. See the License for the specific language governing
- * rights and limitations under the License.
- * 
- * The Original Code is the Netscape security libraries.
- * 
- * The Initial Developer of the Original Code is Netscape
- * Communications Corporation.  Portions created by Netscape are 
- * Copyright (C) 1994-2000 Netscape Communications Corporation.  All
- * Rights Reserved.
- * 
- * Contributor(s):
- * 
- * Alternatively, the contents of this file may be used under the
- * terms of the GNU General Public License Version 2 or later (the
- * "GPL"), in which case the provisions of the GPL are applicable 
- * instead of those above.  If you wish to allow use of your 
- * version of this file only under the terms of the GPL and not to
- * allow others to use your version of this file under the MPL,
- * indicate your decision by deleting the provisions above and
- * replace them with the notice and other provisions required by
- * the GPL.  If you do not delete the provisions above, a recipient
- * may use your version of this file under either the MPL or the
- * GPL.
- */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /*
  * Base64 encoding (binary to ascii).
- *
- * $Id: nssb64e.c,v 1.2 2002/09/07 00:22:50 jpierre%netscape.com Exp $
  */
 
 #include "nssb64.h"
@@ -316,6 +285,11 @@ PL_Base64MaxEncodedLength (PRUint32 size, PRUint32 line_length)
 {
     PRUint32 tokens, tokens_per_line, full_lines, line_break_chars, remainder;
 
+    /* This is the maximum length we support. */
+    if (size > 0x3fffffff) {
+        return 0;
+    }
+
     tokens = (size + 2) / 3;
 
     if (line_length == 0)
@@ -492,6 +466,10 @@ PL_Base64EncodeBuffer (const unsigned char *src, PRUint32 srclen,
      * How much space could we possibly need for encoding this input?
      */
     need_length = PL_Base64MaxEncodedLength (srclen, line_length);
+    if (need_length == 0) {
+        PORT_SetError(SEC_ERROR_INVALID_ARGS);
+        return NULL;
+    }
 
     /*
      * Make sure we have at least that much, if output buffer provided.
@@ -658,12 +636,12 @@ NSSBase64Encoder_Destroy (NSSBase64Encoder *data, PRBool abort_p)
  * otherwise.
  */
 char *
-NSSBase64_EncodeItem (PRArenaPool *arenaOpt, char *outStrOpt,
+NSSBase64_EncodeItem (PLArenaPool *arenaOpt, char *outStrOpt,
 		      unsigned int maxOutLen, SECItem *inItem)
 {
     char *out_string = outStrOpt;
     PRUint32 max_out_len;
-    PRUint32 out_len;
+    PRUint32 out_len = 0;
     void *mark = NULL;
     char *dummy;
 
@@ -674,6 +652,10 @@ NSSBase64_EncodeItem (PRArenaPool *arenaOpt, char *outStrOpt,
     }
 
     max_out_len = PL_Base64MaxEncodedLength (inItem->len, 64);
+    if (max_out_len == 0) {
+        PORT_SetError(SEC_ERROR_INVALID_ARGS);
+        return NULL;
+    }
 
     if (arenaOpt != NULL)
 	mark = PORT_ArenaMark (arenaOpt);
